@@ -113,6 +113,30 @@ async def test_db_backfill_only_saves_new_cache_keys():
 
 
 @pytest.mark.asyncio
+async def test_crawling_prunes_backfilled_keys_for_expired_articles():
+    manager = BotManager()
+    manager.bots = {}
+    manager._db_backfilled_article_keys = {("dummy", 1), ("dummy", 2), ("dummy", 3)}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                1: make_article(1),
+                2: make_article(2),
+                3: make_article(3),
+            }
+        )
+    }
+
+    class DummyCrawler:
+        async def get(self):
+            return crawler.ArticleCollection({2: make_article(2), 3: make_article(3)})
+
+    await manager._crawling("dummy", DummyCrawler())
+
+    assert manager._db_backfilled_article_keys == {("dummy", 2), ("dummy", 3)}
+
+
+@pytest.mark.asyncio
 async def test_crawling_keeps_successful_results_when_one_crawler_fails(monkeypatch):
     manager = BotManager()
     manager.crawlers = {"ok": object(), "broken": object()}

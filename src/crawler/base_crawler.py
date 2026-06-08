@@ -10,8 +10,11 @@ import aiohttp
 import logfire
 
 
-class CrawlerExcpetion(Exception):
+class CrawlerException(Exception):
     pass
+
+
+CrawlerExcpetion = CrawlerException
 
 
 class BaseArticle(TypedDict):
@@ -28,7 +31,8 @@ class BaseArticle(TypedDict):
 
 
 class ArticleCollection(dict[int, BaseArticle]):
-    def __init__(self, data: dict[int, BaseArticle] = {}):
+    def __init__(self, data: dict[int, BaseArticle] | None = None):
+        data = data or {}
         for k, v in data.items():
             self[k] = v
 
@@ -83,7 +87,7 @@ class BaseCrawler(metaclass=ABCMeta):
         self.ssl_ca_cert = ssl_ca_cert
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
         self._prev_status = 200
-        
+
         # SSL 컨텍스트 설정
         self._ssl_context: ssl.SSLContext | bool | None = None
         if not ssl_verify:
@@ -187,11 +191,11 @@ class BaseCrawler(metaclass=ABCMeta):
                     encoding = "cp949"
                 html = await resp.text(encoding=encoding)
             except aiohttp.ClientConnectionError as e:
-                self.logger.error("Connection error: {}", e)
+                self.logger.error("Connection error: %s", e)
                 return
             except Exception as e:
                 await self.dump_http_response(resp)
-                self.logger.error("Cannot get response html string: {}", e)
+                self.logger.error("Cannot get response html string: %s", e)
                 return
         return html
 

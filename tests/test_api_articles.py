@@ -1,9 +1,10 @@
 import pytest
 from fastapi import HTTPException, status
+from sqlalchemy import event, select
 
 from src.api.routes.articles import get_article
 from src.api.routes.crawlers import list_crawlers, list_sites
-from src.db import ArticleRepository, get_async_engine, get_async_session, init_db
+from src.db import Article, ArticleRepository, get_async_engine, get_async_session, init_db
 
 
 def make_article(article_id: int = 1) -> dict:
@@ -63,3 +64,26 @@ async def test_crawler_and_site_counts_exclude_soft_deleted_articles():
 
     assert [(item.name, item.article_count) for item in crawler_response.data] == [("dummy", 1)]
     assert [(item.name, item.article_count) for item in site_response.data] == [("site", 1)]
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_runs_single_insert_statement():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    statements = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    async with get_async_session(engine) as session:
+        count = await ArticleRepository(session).bulk_upsert([make_article(1), make_article(2), make_article(3)])
+        result = await session.execute(select(Article.article_id))
+        article_ids = set(result.scalars())
+
+    await engine.dispose()
+
+    insert_statements = [statement for statement in statements if statement.lstrip().startswith("insert")]
+    assert count == 3
+    assert article_ids == {1, 2, 3}
+    assert len(insert_statements) == 1

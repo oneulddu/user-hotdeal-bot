@@ -114,7 +114,9 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
                     await asyncio.sleep(1)
                     continue
                 item = await self.queue.get()
-                self.logger.debug("Consumer task got item: <%s.%s> %s", item[1]['crawler_name'], item[0], item[1]['title'])
+                self.logger.debug(
+                    "Consumer task got item: <%s.%s> %s", item[1]["crawler_name"], item[0], item[1]["title"]
+                )
                 try:
                     match item[0]:
                         case "send":
@@ -284,14 +286,14 @@ class DummyBot(BaseBot):
         super().__init__(name)
 
     async def _send(self, data: BaseArticle) -> None:
-        self.logger.debug("Send message: %s.%s", data['crawler_name'], data['article_id'])
+        self.logger.debug("Send message: %s.%s", data["crawler_name"], data["article_id"])
         await self.set_msg_obj(data, data["title"])
 
     async def _edit(self, data: BaseArticle) -> None:
-        self.logger.debug("Edit message: %s.%s", data['crawler_name'], data['article_id'])
+        self.logger.debug("Edit message: %s.%s", data["crawler_name"], data["article_id"])
 
     async def _delete(self, data: BaseArticle) -> None:
-        self.logger.debug("Delete message: %s.%s", data['crawler_name'], data['article_id'])
+        self.logger.debug("Delete message: %s.%s", data["crawler_name"], data["article_id"])
         await self.remove_msg_obj(data["crawler_name"], data["article_id"])
 
     async def from_dict(self, data: SerializedBotData) -> None:
@@ -327,29 +329,36 @@ class TelegramBot(BaseBot[telegram.Message]):
             except telegram.error.RetryAfter as e:
                 self.logger.warning(
                     "Retry send message after %s secs: (%s): %s (%s) -> %s",
-                    e.retry_after, e, data["title"], data["url"], self.target
+                    e.retry_after,
+                    e,
+                    data["title"],
+                    data["url"],
+                    self.target,
                 )
                 logfire.warn("Rate limited, retrying", retry_after=e.retry_after, target=self.target)
                 await asyncio.sleep(e.retry_after)
                 msg = await self._send(data, retry=False)
             except telegram.error.TimedOut as e:
                 self.logger.error(
-                    "Send message timeout (%s): %s (%s) -> %s",
-                    e, data["title"], data["url"], self.target
+                    "Send message timeout (%s): %s (%s) -> %s", e, data["title"], data["url"], self.target
                 )
                 logfire.error("Send message timeout", error=str(e), target=self.target)
             except telegram.error.TelegramError as e:
                 self.logger.error(
                     "Send message failed: %s (%s): %s (%s) -> %s",
-                    e.__class__.__name__, e, data["title"], data["url"], self.target
+                    e.__class__.__name__,
+                    e,
+                    data["title"],
+                    data["url"],
+                    self.target,
                 )
                 logfire.error("Telegram error", error=str(e), error_type=e.__class__.__name__, target=self.target)
-            finally:
-                if msg is None and retry:
-                    msg = await self._send(data, retry=False)
-                if msg is not None:
-                    await self.set_msg_obj(data, msg)
-                return msg
+
+            if msg is None and retry:
+                msg = await self._send(data, retry=False)
+            if msg is not None:
+                await self.set_msg_obj(data, msg)
+            return msg
 
     async def _edit(self, data: BaseArticle, retry: bool = False):
         msg = await self.get_msg_obj(data)
@@ -362,24 +371,26 @@ class TelegramBot(BaseBot[telegram.Message]):
         except telegram.error.RetryAfter as e:
             self.logger.warning(
                 "Retry edit message after %s secs: (%s): %s (%s) <- %s",
-                e.retry_after, e, data["title"], data["url"], msg.message_id
+                e.retry_after,
+                e,
+                data["title"],
+                data["url"],
+                msg.message_id,
             )
             await asyncio.sleep(e.retry_after)
             await self._edit(data, retry=False)
         except telegram.error.TimedOut as e:
-            self.logger.error(
-                "Edit message timeout (%s): %s (%s) <- %s",
-                e, data["title"], data["url"], msg.message_id
-            )
+            self.logger.error("Edit message timeout (%s): %s (%s) <- %s", e, data["title"], data["url"], msg.message_id)
         except telegram.error.BadRequest as e:
-            self.logger.error(
-                "Edit message failed (%s): %s (%s) <- %s",
-                e, data["title"], data["url"], msg.message_id
-            )
+            self.logger.error("Edit message failed (%s): %s (%s) <- %s", e, data["title"], data["url"], msg.message_id)
         except telegram.error.TelegramError as e:
             self.logger.error(
                 "Edit message failed: %s (%s): %s (%s) <- %s",
-                e.__class__.__name__, e, data["title"], data["url"], msg.message_id
+                e.__class__.__name__,
+                e,
+                data["title"],
+                data["url"],
+                msg.message_id,
             )
 
     async def _delete(self, data: BaseArticle):
@@ -393,13 +404,16 @@ class TelegramBot(BaseBot[telegram.Message]):
             await msg.delete()
         except telegram.error.BadRequest as e:
             self.logger.error(
-                "Delete message failed (%s): %s (%s) <- %s",
-                e, data["title"], data["url"], msg.message_id
+                "Delete message failed (%s): %s (%s) <- %s", e, data["title"], data["url"], msg.message_id
             )
         except telegram.error.TelegramError as e:
             self.logger.error(
                 "Delete message failed: %s (%s): %s (%s) <- %s",
-                e.__class__.__name__, e, data["title"], data["url"], msg.message_id
+                e.__class__.__name__,
+                e,
+                data["title"],
+                data["url"],
+                msg.message_id,
             )
 
     async def from_dict(self, data: SerializedBotData) -> None:
