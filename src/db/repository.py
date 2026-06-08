@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -314,6 +314,46 @@ class GuestRateLimitRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _ensure_row(self, ip_address: str, now: datetime) -> None:
+        """Create a rate-limit row if it does not already exist."""
+        values = {
+            "ip_address": ip_address,
+            "request_count": 0,
+            "window_start": now,
+        }
+
+        if _is_mysql_session(self.session):
+            stmt = mysql_insert(GuestRateLimit).values(**values)
+            stmt = stmt.on_duplicate_key_update(ip_address=stmt.inserted.ip_address)
+        else:
+            stmt = sqlite_insert(GuestRateLimit).values(**values)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["ip_address"])
+
+        await self.session.execute(stmt)
+
+    async def _increment_active_window(self, ip_address: str, cutoff: datetime, limit_per_minute: int) -> bool:
+        result = await self.session.execute(
+            update(GuestRateLimit)
+            .where(
+                GuestRateLimit.ip_address == ip_address,
+                GuestRateLimit.window_start >= cutoff,
+                GuestRateLimit.request_count < limit_per_minute,
+            )
+            .values(request_count=GuestRateLimit.request_count + 1)
+        )
+        return bool(result.rowcount)
+
+    async def _reset_expired_window(self, ip_address: str, cutoff: datetime, now: datetime) -> bool:
+        result = await self.session.execute(
+            update(GuestRateLimit)
+            .where(
+                GuestRateLimit.ip_address == ip_address,
+                GuestRateLimit.window_start < cutoff,
+            )
+            .values(request_count=1, window_start=now)
+        )
+        return bool(result.rowcount)
+
     async def check_and_increment(self, ip_address: str, limit_per_minute: int) -> bool:
         """Check if IP is within rate limit and increment counter.
 
@@ -324,33 +364,24 @@ class GuestRateLimitRepository:
         Returns:
             True if within limit, False if exceeded
         """
-        result = await self.session.execute(select(GuestRateLimit).where(GuestRateLimit.ip_address == ip_address))
-        rate_limit = result.scalar_one_or_none()
-
         now = datetime.now()
+        cutoff = now - timedelta(minutes=1)
 
-        if rate_limit is None:
-            # First request from this IP
-            rate_limit = GuestRateLimit(ip_address=ip_address, request_count=1, window_start=now)
-            self.session.add(rate_limit)
+        await self._ensure_row(ip_address, now)
+
+        if await self._increment_active_window(ip_address, cutoff, limit_per_minute):
             await self.session.flush()
             return True
 
-        # Check if window has expired (1 minute)
-        if now - rate_limit.window_start > timedelta(minutes=1):
-            rate_limit.request_count = 1
-            rate_limit.window_start = now
+        if await self._reset_expired_window(ip_address, cutoff, now):
             await self.session.flush()
             return True
 
-        # Check if within limit
-        if rate_limit.request_count >= limit_per_minute:
-            return False
-
-        # Increment counter
-        rate_limit.request_count += 1
+        # Another request may have reset the expired window between the first
+        # increment attempt and our reset attempt. Try the fresh window once.
+        allowed = await self._increment_active_window(ip_address, cutoff, limit_per_minute)
         await self.session.flush()
-        return True
+        return allowed
 
     async def cleanup_old_records(self, older_than_minutes: int = 60) -> int:
         """Remove old rate limit records.
@@ -380,6 +411,46 @@ class ApiKeyRateLimitRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _ensure_row(self, api_key_id: int, now: datetime) -> None:
+        """Create a rate-limit row if it does not already exist."""
+        values = {
+            "api_key_id": api_key_id,
+            "request_count": 0,
+            "window_start": now,
+        }
+
+        if _is_mysql_session(self.session):
+            stmt = mysql_insert(ApiKeyRateLimit).values(**values)
+            stmt = stmt.on_duplicate_key_update(api_key_id=stmt.inserted.api_key_id)
+        else:
+            stmt = sqlite_insert(ApiKeyRateLimit).values(**values)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["api_key_id"])
+
+        await self.session.execute(stmt)
+
+    async def _increment_active_window(self, api_key_id: int, cutoff: datetime, limit_per_minute: int) -> bool:
+        result = await self.session.execute(
+            update(ApiKeyRateLimit)
+            .where(
+                ApiKeyRateLimit.api_key_id == api_key_id,
+                ApiKeyRateLimit.window_start >= cutoff,
+                ApiKeyRateLimit.request_count < limit_per_minute,
+            )
+            .values(request_count=ApiKeyRateLimit.request_count + 1)
+        )
+        return bool(result.rowcount)
+
+    async def _reset_expired_window(self, api_key_id: int, cutoff: datetime, now: datetime) -> bool:
+        result = await self.session.execute(
+            update(ApiKeyRateLimit)
+            .where(
+                ApiKeyRateLimit.api_key_id == api_key_id,
+                ApiKeyRateLimit.window_start < cutoff,
+            )
+            .values(request_count=1, window_start=now)
+        )
+        return bool(result.rowcount)
+
     async def check_and_increment(self, api_key_id: int, limit_per_minute: int) -> bool:
         """Check if API key is within rate limit and increment counter.
 
@@ -390,35 +461,24 @@ class ApiKeyRateLimitRepository:
         Returns:
             True if within limit, False if exceeded
         """
-        result = await self.session.execute(
-            select(ApiKeyRateLimit).where(ApiKeyRateLimit.api_key_id == api_key_id)
-        )
-        rate_limit = result.scalar_one_or_none()
-
         now = datetime.now()
+        cutoff = now - timedelta(minutes=1)
 
-        if rate_limit is None:
-            # First request from this API key
-            rate_limit = ApiKeyRateLimit(api_key_id=api_key_id, request_count=1, window_start=now)
-            self.session.add(rate_limit)
+        await self._ensure_row(api_key_id, now)
+
+        if await self._increment_active_window(api_key_id, cutoff, limit_per_minute):
             await self.session.flush()
             return True
 
-        # Check if window has expired (1 minute)
-        if now - rate_limit.window_start > timedelta(minutes=1):
-            rate_limit.request_count = 1
-            rate_limit.window_start = now
+        if await self._reset_expired_window(api_key_id, cutoff, now):
             await self.session.flush()
             return True
 
-        # Check if within limit
-        if rate_limit.request_count >= limit_per_minute:
-            return False
-
-        # Increment counter
-        rate_limit.request_count += 1
+        # Another request may have reset the expired window between the first
+        # increment attempt and our reset attempt. Try the fresh window once.
+        allowed = await self._increment_active_window(api_key_id, cutoff, limit_per_minute)
         await self.session.flush()
-        return True
+        return allowed
 
     async def cleanup_old_records(self, older_than_minutes: int = 60) -> int:
         """Remove old rate limit records.
@@ -430,9 +490,7 @@ class ApiKeyRateLimitRepository:
             Number of records deleted
         """
         cutoff = datetime.now() - timedelta(minutes=older_than_minutes)
-        result = await self.session.execute(
-            select(ApiKeyRateLimit).where(ApiKeyRateLimit.window_start < cutoff)
-        )
+        result = await self.session.execute(select(ApiKeyRateLimit).where(ApiKeyRateLimit.window_start < cutoff))
         old_records = result.scalars().all()
 
         count = 0

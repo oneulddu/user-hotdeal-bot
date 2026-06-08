@@ -1,0 +1,104 @@
+from datetime import datetime, timedelta
+
+import pytest
+from sqlalchemy import select
+
+from src.db import (
+    ApiKeyRateLimit,
+    ApiKeyRateLimitRepository,
+    GuestRateLimit,
+    GuestRateLimitRepository,
+    get_async_engine,
+    get_async_session,
+    init_db,
+)
+
+
+@pytest.mark.asyncio
+async def test_guest_rate_limit_does_not_increment_past_limit():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        repo = GuestRateLimitRepository(session)
+
+        assert await repo.check_and_increment("127.0.0.1", 2) is True
+        assert await repo.check_and_increment("127.0.0.1", 2) is True
+        assert await repo.check_and_increment("127.0.0.1", 2) is False
+
+        result = await session.execute(select(GuestRateLimit).where(GuestRateLimit.ip_address == "127.0.0.1"))
+        rate_limit = result.scalar_one()
+
+    await engine.dispose()
+
+    assert rate_limit.request_count == 2
+
+
+@pytest.mark.asyncio
+async def test_guest_rate_limit_resets_expired_window():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        session.add(
+            GuestRateLimit(
+                ip_address="127.0.0.1",
+                request_count=99,
+                window_start=datetime.now() - timedelta(minutes=2),
+            )
+        )
+        await session.flush()
+
+        assert await GuestRateLimitRepository(session).check_and_increment("127.0.0.1", 2) is True
+
+        result = await session.execute(select(GuestRateLimit).where(GuestRateLimit.ip_address == "127.0.0.1"))
+        rate_limit = result.scalar_one()
+
+    await engine.dispose()
+
+    assert rate_limit.request_count == 1
+
+
+@pytest.mark.asyncio
+async def test_api_key_rate_limit_does_not_increment_past_limit():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        repo = ApiKeyRateLimitRepository(session)
+
+        assert await repo.check_and_increment(1, 2) is True
+        assert await repo.check_and_increment(1, 2) is True
+        assert await repo.check_and_increment(1, 2) is False
+
+        result = await session.execute(select(ApiKeyRateLimit).where(ApiKeyRateLimit.api_key_id == 1))
+        rate_limit = result.scalar_one()
+
+    await engine.dispose()
+
+    assert rate_limit.request_count == 2
+
+
+@pytest.mark.asyncio
+async def test_api_key_rate_limit_resets_expired_window():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        session.add(
+            ApiKeyRateLimit(
+                api_key_id=1,
+                request_count=99,
+                window_start=datetime.now() - timedelta(minutes=2),
+            )
+        )
+        await session.flush()
+
+        assert await ApiKeyRateLimitRepository(session).check_and_increment(1, 2) is True
+
+        result = await session.execute(select(ApiKeyRateLimit).where(ApiKeyRateLimit.api_key_id == 1))
+        rate_limit = result.scalar_one()
+
+    await engine.dispose()
+
+    assert rate_limit.request_count == 1

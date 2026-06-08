@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 # Default database URL (SQLite for development)
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./hotdeal.db"
 
-# Cached config
-_config: dict[str, Any] | None = None
+# Cached configs by path
+_config_cache: dict[str, dict[str, Any]] = {}
 
 
 def _load_config(config_path: str = "config.yaml") -> dict[str, Any]:
@@ -25,18 +25,19 @@ def _load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     Returns:
         Config dictionary, empty dict if file not found
     """
-    global _config
-    if _config is not None:
-        return _config
-
     path = Path(config_path)
+    cache_key = str(path.resolve()) if path.exists() else str(path)
+    if cache_key in _config_cache:
+        return _config_cache[cache_key]
+
     if path.exists():
         with open(path, encoding="utf-8") as f:
-            _config = yaml.safe_load(f) or {}
+            config = yaml.safe_load(f) or {}
     else:
-        _config = {}
+        config = {}
 
-    return _config
+    _config_cache[cache_key] = config
+    return config
 
 
 def get_database_url(config_path: str = "config.yaml") -> str:
@@ -46,7 +47,6 @@ def get_database_url(config_path: str = "config.yaml") -> str:
 
     Examples:
         - SQLite: sqlite+aiosqlite:///./hotdeal.db
-        - PostgreSQL: postgresql+asyncpg://user:pass@localhost/hotdeal
         - MariaDB: mysql+aiomysql://user:pass@localhost/hotdeal
     """
     config = _load_config(config_path)

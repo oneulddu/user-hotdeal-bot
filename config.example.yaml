@@ -4,9 +4,8 @@ app:
 
 # 데이터베이스 설정
 database:
-  url: sqlite+aiosqlite:///./data/hotdeal.db  # DATABASE_URL 환경변수보다 우선
+  # url: sqlite+aiosqlite:///./data/hotdeal.db  # DATABASE_URL 환경변수보다 우선
   # MySQL/MariaDB 예시: mysql+aiomysql://user:password@localhost:3306/hotdeal
-  # PostgreSQL 예시: postgresql+asyncpg://user:password@localhost:5432/hotdeal
   echo: false  # SQL 쿼리 로깅 (디버깅용)
 
 # 크롤러 설정 (핫딜 게시글 수집)
