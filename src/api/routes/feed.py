@@ -1,11 +1,10 @@
 """RSS Feed routes."""
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Query, Response
 from feedgen.feed import FeedGenerator
 
 from src.api.deps import ArticleRepo, AuthResult
+from src.datetime_utils import as_utc, utc_now
 from src.db import Article
 
 router = APIRouter(prefix="/feed", tags=["feed"])
@@ -19,7 +18,7 @@ def _create_feed_generator(title: str = "핫딜 모아보기") -> FeedGenerator:
     fg.description("한국 커뮤니티 핫딜 모아보기")
     fg.language("ko")
     fg.generator("user-hotdeal-bot")
-    fg.lastBuildDate(datetime.now(timezone.utc))
+    fg.lastBuildDate(utc_now())
     return fg
 
 
@@ -54,8 +53,8 @@ def _fill_entry_common(fe, article: Article) -> None:
     fe.title(article.title)
     fe.link(href=article.url)
     fe.author(name=article.writer_name)
-    fe.published(article.created_at.replace(tzinfo=timezone.utc))
-    fe.updated(article.updated_at.replace(tzinfo=timezone.utc))
+    fe.published(as_utc(article.created_at))
+    fe.updated(as_utc(article.updated_at))
 
     if article.category:
         fe.category(term=article.category)

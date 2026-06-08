@@ -8,6 +8,8 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.datetime_utils import utc_now
+
 from .models import ApiKey, ApiKeyRateLimit, Article, GuestRateLimit, Settings
 
 
@@ -50,44 +52,7 @@ class ArticleRepository:
         Returns:
             Upserted Article instance
         """
-        update_values = {
-            "title": article_data.get("title"),
-            "category": article_data.get("category"),
-            "site_name": article_data.get("site_name"),
-            "board_name": article_data.get("board_name"),
-            "writer_name": article_data.get("writer_name"),
-            "url": article_data.get("url"),
-            "is_end": article_data.get("is_end"),
-            "extra": article_data.get("extra"),
-            "updated_at": func.now(),
-            "deleted_at": None,  # Restore if was soft-deleted
-        }
-
-        if _is_mysql_session(self.session):
-            # MySQL/MariaDB upsert using INSERT ... ON DUPLICATE KEY UPDATE
-            stmt = mysql_insert(Article).values(**article_data)
-            stmt = stmt.on_duplicate_key_update(**update_values)
-        else:
-            # SQLite upsert using INSERT ... ON CONFLICT
-            stmt = sqlite_insert(Article).values(**article_data)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["crawler_name", "article_id"],
-                set_={
-                    "title": stmt.excluded.title,
-                    "category": stmt.excluded.category,
-                    "site_name": stmt.excluded.site_name,
-                    "board_name": stmt.excluded.board_name,
-                    "writer_name": stmt.excluded.writer_name,
-                    "url": stmt.excluded.url,
-                    "is_end": stmt.excluded.is_end,
-                    "extra": stmt.excluded.extra,
-                    "updated_at": func.now(),
-                    "deleted_at": None,  # Restore if was soft-deleted
-                },
-            )
-
-        await self.session.execute(stmt)
-        await self.session.flush()
+        await self.bulk_upsert([article_data])
 
         # Fetch the upserted record
         result = await self.session.execute(
@@ -110,8 +75,41 @@ class ArticleRepository:
         if not articles:
             return 0
 
-        for article_data in articles:
-            await self.upsert(article_data)
+        now = utc_now()
+        if _is_mysql_session(self.session):
+            stmt = mysql_insert(Article).values(articles)
+            stmt = stmt.on_duplicate_key_update(
+                title=stmt.inserted.title,
+                category=stmt.inserted.category,
+                site_name=stmt.inserted.site_name,
+                board_name=stmt.inserted.board_name,
+                writer_name=stmt.inserted.writer_name,
+                url=stmt.inserted.url,
+                is_end=stmt.inserted.is_end,
+                extra=stmt.inserted.extra,
+                updated_at=now,
+                deleted_at=None,
+            )
+        else:
+            stmt = sqlite_insert(Article).values(articles)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["crawler_name", "article_id"],
+                set_={
+                    "title": stmt.excluded.title,
+                    "category": stmt.excluded.category,
+                    "site_name": stmt.excluded.site_name,
+                    "board_name": stmt.excluded.board_name,
+                    "writer_name": stmt.excluded.writer_name,
+                    "url": stmt.excluded.url,
+                    "is_end": stmt.excluded.is_end,
+                    "extra": stmt.excluded.extra,
+                    "updated_at": now,
+                    "deleted_at": None,
+                },
+            )
+
+        await self.session.execute(stmt)
+        await self.session.flush()
 
         return len(articles)
 
@@ -221,7 +219,7 @@ class ArticleRepository:
         if article is None:
             return False
 
-        article.deleted_at = datetime.now()
+        article.deleted_at = utc_now()
         await self.session.flush()
         return True
 
@@ -239,7 +237,7 @@ class ArticleRepository:
         if article is None:
             return False
 
-        article.deleted_at = datetime.now()
+        article.deleted_at = utc_now()
         await self.session.flush()
         return True
 
@@ -310,7 +308,7 @@ class ApiKeyRepository:
         """
         api_key = await self.get_by_key(key)
         if api_key:
-            api_key.last_used_at = datetime.now()
+            api_key.last_used_at = utc_now()
             await self.session.flush()
 
     async def create(self, key: str, name: str, rate_limit_per_minute: int = 60) -> ApiKey:
@@ -386,7 +384,7 @@ class GuestRateLimitRepository:
         Returns:
             True if within limit, False if exceeded
         """
-        now = datetime.now()
+        now = utc_now()
         cutoff = now - timedelta(minutes=1)
 
         await self._ensure_row(ip_address, now)
@@ -414,7 +412,7 @@ class GuestRateLimitRepository:
         Returns:
             Number of records deleted
         """
-        cutoff = datetime.now() - timedelta(minutes=older_than_minutes)
+        cutoff = utc_now() - timedelta(minutes=older_than_minutes)
         result = await self.session.execute(delete(GuestRateLimit).where(GuestRateLimit.window_start < cutoff))
         await self.session.flush()
         return result.rowcount or 0
@@ -476,7 +474,7 @@ class ApiKeyRateLimitRepository:
         Returns:
             True if within limit, False if exceeded
         """
-        now = datetime.now()
+        now = utc_now()
         cutoff = now - timedelta(minutes=1)
 
         await self._ensure_row(api_key_id, now)
@@ -504,7 +502,7 @@ class ApiKeyRateLimitRepository:
         Returns:
             Number of records deleted
         """
-        cutoff = datetime.now() - timedelta(minutes=older_than_minutes)
+        cutoff = utc_now() - timedelta(minutes=older_than_minutes)
         result = await self.session.execute(delete(ApiKeyRateLimit).where(ApiKeyRateLimit.window_start < cutoff))
         await self.session.flush()
         return result.rowcount or 0

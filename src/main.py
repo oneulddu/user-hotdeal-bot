@@ -19,9 +19,7 @@ from src import (
     util,  # noqa: F401
 )
 from src.db import ArticleRepository, close_db, get_async_session, get_engine, get_timezone
-
-__version__ = "2.2.1"
-
+from src.version import __version__
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
@@ -326,7 +324,7 @@ class BotManager:
         self.crawlers = {}
         for crawler_name, crawler_config in crawlers.items():
             # 활성화 여부 확인
-            if not crawler_config["enabled"]:
+            if not crawler_config.get("enabled", True):
                 self.logger.info("Crawler disabled: %s", crawler_name)
                 continue
             if crawler_name in _crawlers_old:
@@ -381,6 +379,9 @@ class BotManager:
         self.logger.info("Bot initialize start")
         _bots_old, self.bots = self.bots, {}
         for bot_name, bot_config in bots.items():
+            if not bot_config.get("enabled", True):
+                self.logger.info("Bot disabled: %s", bot_name)
+                continue
             bot_cls_name = bot_config["bot_name"]
             bot_cls = getattr(bot, bot_cls_name, None)
             if bot_cls is None:
@@ -388,9 +389,6 @@ class BotManager:
                 continue
             if not issubclass(bot_cls, bot.BaseBot):
                 self.logger.warning("Invalid bot class: %s", bot_cls_name)
-                continue
-            if not bot_config["enabled"]:
-                self.logger.info("Bot disabled: %s", bot_name)
                 continue
             if bot_name in _bots_old:
                 _bot = _bots_old.pop(bot_name)
@@ -539,7 +537,7 @@ class BotManager:
         # 메시지 새로 보내기, 기존 메시지 업데이트, 기존 메시지 삭제
         result: CrawlingResult = {"new": [], "update": [], "remove": []}
         # 크롤러별로 웹페이지 크롤링 후 합쳐서 어떤 메시지를 새로 보내거나 정리할지 결정
-        st = time.time()
+        st = time.monotonic()
         gathered_results = await asyncio.gather(
             *[self._crawling(name, cwr) for name, cwr in self.crawlers.items()],
             return_exceptions=True,
@@ -560,7 +558,7 @@ class BotManager:
                 self.logger.debug("Update: %s (%s)", article["title"], article["url"])
             for article in result["remove"]:
                 self.logger.debug("Remove: %s (%s)", article["title"], article["url"])
-        crawling_time = time.time() - st
+        crawling_time = time.monotonic() - st
         self.logger.info(
             "Result: %.2fs, %d/%d/%d", crawling_time, len(result["new"]), len(result["update"]), len(result["remove"])
         )
@@ -732,7 +730,7 @@ class BotManager:
         self.logger.info("session close start")
         # 크롤러 세션 닫기
         for k, cwr in self.crawlers.items():
-            self.logger.debug("cralwer close: %s", k)
+            self.logger.debug("crawler close: %s", k)
             if not cwr.session.closed:
                 await cwr.close()
         # 봇 세션 닫기

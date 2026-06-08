@@ -26,7 +26,7 @@ async def test_query_api_key_auth_works_when_guest_access_is_disabled():
     await init_db(engine)
 
     async with get_async_session(engine) as session:
-        await ApiKeyRepository(session).create("valid-key", "test-client")
+        api_key = await ApiKeyRepository(session).create("valid-key", "test-client")
         await SettingsRepository(session).set(Settings.GUEST_ACCESS_ENABLED, "false")
 
         auth_result = await verify_api_key_or_guest(
@@ -38,6 +38,7 @@ async def test_query_api_key_auth_works_when_guest_access_is_disabled():
     await engine.dispose()
 
     assert auth_result == "valid-key"
+    assert api_key.last_used_at is not None
 
 
 @pytest.mark.asyncio

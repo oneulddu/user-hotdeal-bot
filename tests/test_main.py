@@ -9,12 +9,14 @@ from src.main import BotManager, PersistenceManager
 
 
 def test_version():
+    from src.api.main import VERSION
     from src.main import __version__
 
     with open("pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
     project_version = pyproject["project"]["version"]
     assert project_version == __version__
+    assert project_version == VERSION
 
 
 @pytest.mark.asyncio
@@ -72,6 +74,27 @@ async def test_load_config_handles_missing_required_top_level_keys(tmp_path):
 
     assert manager.crawlers == {}
     assert manager.bots == {}
+
+
+@pytest.mark.asyncio
+async def test_init_bots_skips_disabled_before_class_lookup(caplog):
+    manager = BotManager()
+    manager.bots = {}
+
+    with caplog.at_level("WARNING"):
+        await manager.init_bots(
+            {
+                "disabled": {
+                    "bot_name": "MissingBotClass",
+                    "description": "disabled bot",
+                    "kwargs": {},
+                    "enabled": False,
+                }
+            }
+        )
+
+    assert manager.bots == {}
+    assert "Unknown bot class" not in caplog.text
 
 
 @pytest.mark.asyncio

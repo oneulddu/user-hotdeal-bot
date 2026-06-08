@@ -23,6 +23,15 @@ def test_article_collection():
     assert len(ac) == 10
 
 
+def test_article_collection_default_data_is_not_shared():
+    first = crawler.ArticleCollection()
+    second = crawler.ArticleCollection()
+
+    first[1] = generate_dummy_article(1)
+
+    assert 1 not in second
+
+
 def test_article_collection_remove_expired():
     """ArticleCollection 클래스의 remove_expired 메서드 테스트"""
     ac = crawler.ArticleCollection({i: generate_dummy_article(i) for i in range(1, 11)})

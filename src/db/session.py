@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary
 
 import yaml
 from sqlalchemy.engine import make_url
@@ -18,6 +19,7 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 
 # Cached configs by path
 _config_cache: dict[str, dict[str, Any]] = {}
+_session_maker_cache: WeakKeyDictionary[AsyncEngine, async_sessionmaker[AsyncSession]] = WeakKeyDictionary()
 
 
 def _load_config(config_path: str = "config.yaml") -> dict[str, Any]:
@@ -166,13 +168,15 @@ def get_async_session_maker(engine: AsyncEngine) -> async_sessionmaker[AsyncSess
     Returns:
         async_sessionmaker instance
     """
-    return async_sessionmaker(
-        bind=engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
+    if engine not in _session_maker_cache:
+        _session_maker_cache[engine] = async_sessionmaker(
+            bind=engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    return _session_maker_cache[engine]
 
 
 @asynccontextmanager

@@ -1,11 +1,14 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
 
+from src.api.main import cleanup_rate_limit_records
+from src.datetime_utils import utc_now
 from src.db import (
     ApiKeyRateLimit,
     ApiKeyRateLimitRepository,
+    ApiKeyRepository,
     GuestRateLimit,
     GuestRateLimitRepository,
     get_async_engine,
@@ -44,7 +47,7 @@ async def test_guest_rate_limit_resets_expired_window():
             GuestRateLimit(
                 ip_address="127.0.0.1",
                 request_count=99,
-                window_start=datetime.now() - timedelta(minutes=2),
+                window_start=utc_now() - timedelta(minutes=2),
             )
         )
         await session.flush()
@@ -70,12 +73,12 @@ async def test_guest_rate_limit_cleanup_deletes_only_old_records():
                 GuestRateLimit(
                     ip_address="old",
                     request_count=1,
-                    window_start=datetime.now() - timedelta(minutes=120),
+                    window_start=utc_now() - timedelta(minutes=120),
                 ),
                 GuestRateLimit(
                     ip_address="recent",
                     request_count=1,
-                    window_start=datetime.now(),
+                    window_start=utc_now(),
                 ),
             ]
         )
@@ -120,7 +123,7 @@ async def test_api_key_rate_limit_resets_expired_window():
             ApiKeyRateLimit(
                 api_key_id=1,
                 request_count=99,
-                window_start=datetime.now() - timedelta(minutes=2),
+                window_start=utc_now() - timedelta(minutes=2),
             )
         )
         await session.flush()
@@ -146,12 +149,12 @@ async def test_api_key_rate_limit_cleanup_deletes_only_old_records():
                 ApiKeyRateLimit(
                     api_key_id=1,
                     request_count=1,
-                    window_start=datetime.now() - timedelta(minutes=120),
+                    window_start=utc_now() - timedelta(minutes=120),
                 ),
                 ApiKeyRateLimit(
                     api_key_id=2,
                     request_count=1,
-                    window_start=datetime.now(),
+                    window_start=utc_now(),
                 ),
             ]
         )
@@ -164,3 +167,39 @@ async def test_api_key_rate_limit_cleanup_deletes_only_old_records():
 
     assert deleted_count == 1
     assert set(result.scalars()) == {2}
+
+
+@pytest.mark.asyncio
+async def test_api_cleanup_rate_limit_records_deletes_guest_and_api_rows(monkeypatch):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    monkeypatch.setattr("src.api.main.get_engine", lambda: engine)
+
+    async with get_async_session(engine) as session:
+        api_key = await ApiKeyRepository(session).create("valid-key", "test-client")
+        session.add_all(
+            [
+                GuestRateLimit(
+                    ip_address="old",
+                    request_count=1,
+                    window_start=utc_now() - timedelta(minutes=120),
+                ),
+                ApiKeyRateLimit(
+                    api_key_id=api_key.id,
+                    request_count=1,
+                    window_start=utc_now() - timedelta(minutes=120),
+                ),
+            ]
+        )
+
+    deleted_count = await cleanup_rate_limit_records()
+
+    async with get_async_session(engine) as session:
+        guest_result = await session.execute(select(GuestRateLimit.ip_address))
+        api_result = await session.execute(select(ApiKeyRateLimit.api_key_id))
+
+    await engine.dispose()
+
+    assert deleted_count == 2
+    assert list(guest_result.scalars()) == []
+    assert list(api_result.scalars()) == []

@@ -1,5 +1,8 @@
 """FastAPI application entry point."""
 
+import asyncio
+import contextlib
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -8,13 +11,23 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.db import close_db, get_engine, get_timezone
+from src.db import (
+    ApiKeyRateLimitRepository,
+    GuestRateLimitRepository,
+    close_db,
+    get_async_session,
+    get_engine,
+    get_timezone,
+)
+from src.version import __version__
 
 from .routes import articles_router, crawlers_router, feed_router
 from .schemas import HealthResponse
 
-# Application version (sync with pyproject.toml)
-VERSION = "2.2.1"
+VERSION = __version__
+RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 3600
+RATE_LIMIT_CLEANUP_OLDER_THAN_MINUTES = 60
+logger = logging.getLogger(__name__)
 
 
 def get_cors_origins() -> list[str]:
@@ -30,14 +43,41 @@ if hasattr(time, "tzset"):
     time.tzset()
 
 
+async def cleanup_rate_limit_records() -> int:
+    async with get_async_session(get_engine()) as session:
+        guest_deleted = await GuestRateLimitRepository(session).cleanup_old_records(
+            older_than_minutes=RATE_LIMIT_CLEANUP_OLDER_THAN_MINUTES
+        )
+        api_key_deleted = await ApiKeyRateLimitRepository(session).cleanup_old_records(
+            older_than_minutes=RATE_LIMIT_CLEANUP_OLDER_THAN_MINUTES
+        )
+    return guest_deleted + api_key_deleted
+
+
+async def rate_limit_cleanup_loop() -> None:
+    while True:
+        try:
+            await cleanup_rate_limit_records()
+        except Exception as e:
+            logger.warning("Failed to cleanup rate limit records: %s", e)
+        await asyncio.sleep(RATE_LIMIT_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup/shutdown."""
     # Startup: Initialize database engine
     get_engine()
-    yield
-    # Shutdown: Close database connections
-    await close_db()
+    cleanup_task = asyncio.create_task(rate_limit_cleanup_loop())
+    app.state.rate_limit_cleanup_task = cleanup_task
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
+        # Shutdown: Close database connections
+        await close_db()
 
 
 app = FastAPI(
