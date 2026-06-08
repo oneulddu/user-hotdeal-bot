@@ -7,9 +7,15 @@ from .base_crawler import ArticleCollection, BaseArticle, BaseCrawler
 
 class DummyCrawler(BaseCrawler):
     def __init__(
-        self, name: str, url_list: list[str], session: aiohttp.ClientSession | None = None, proxy: str | None = None
+        self,
+        name: str,
+        url_list: list[str],
+        session: aiohttp.ClientSession | None = None,
+        proxy: str | None = None,
+        ssl_verify: bool = True,
+        ssl_ca_cert: str | None = None,
     ) -> None:
-        super().__init__(name, url_list, session, proxy=proxy)
+        super().__init__(name, url_list, session, proxy=proxy, ssl_verify=ssl_verify, ssl_ca_cert=ssl_ca_cert)
         self.start = 1
         self.dummy_data = {i: self._generate_article_object(i) for i in range(self.start, self.start + 10)}
 
