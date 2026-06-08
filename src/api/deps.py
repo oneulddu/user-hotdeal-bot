@@ -3,7 +3,7 @@
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import (
@@ -59,6 +59,7 @@ async def verify_api_key_or_guest(
     request: Request,
     session: DbSession,
     x_api_key: Annotated[str | None, Header()] = None,
+    api_key: Annotated[str | None, Query()] = None,
 ) -> str | None:
     """Verify API key or allow guest access with rate limiting.
 
@@ -69,10 +70,12 @@ async def verify_api_key_or_guest(
     settings_repo = SettingsRepository(session)
     guest_rate_limit_repo = GuestRateLimitRepository(session)
 
+    api_key_value = x_api_key or api_key
+
     # Check API key if provided
-    if x_api_key:
-        api_key = await api_key_repo.get_by_key(x_api_key)
-        if api_key is None:
+    if api_key_value:
+        db_api_key = await api_key_repo.get_by_key(api_key_value)
+        if db_api_key is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key",
@@ -81,16 +84,16 @@ async def verify_api_key_or_guest(
         # Rate limit for API key
         api_key_rate_limit_repo = ApiKeyRateLimitRepository(session)
         within_limit = await api_key_rate_limit_repo.check_and_increment(
-            api_key.id, api_key.rate_limit_per_minute
+            db_api_key.id, db_api_key.rate_limit_per_minute
         )
         if not within_limit:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit exceeded. Maximum {api_key.rate_limit_per_minute} requests per minute.",
+                detail=f"Rate limit exceeded. Maximum {db_api_key.rate_limit_per_minute} requests per minute.",
             )
 
-        await api_key_repo.update_last_used(x_api_key)
-        return x_api_key
+        await api_key_repo.update_last_used(api_key_value)
+        return api_key_value
 
     # Guest access
     guest_enabled = await settings_repo.get_bool(Settings.GUEST_ACCESS_ENABLED, default=True)
