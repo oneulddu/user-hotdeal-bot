@@ -2,7 +2,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 SCRIPT = Path("scripts/mariadb_backup.sh")
 
 

@@ -250,10 +250,7 @@ class ArticleRepository:
             List of crawler names
         """
         result = await self.session.execute(
-            select(Article.crawler_name)
-            .distinct()
-            .where(Article.deleted_at.is_(None))
-            .order_by(Article.crawler_name)
+            select(Article.crawler_name).distinct().where(Article.deleted_at.is_(None)).order_by(Article.crawler_name)
         )
         return list(result.scalars().all())
 
@@ -264,10 +261,7 @@ class ArticleRepository:
             List of site names
         """
         result = await self.session.execute(
-            select(Article.site_name)
-            .distinct()
-            .where(Article.deleted_at.is_(None))
-            .order_by(Article.site_name)
+            select(Article.site_name).distinct().where(Article.deleted_at.is_(None)).order_by(Article.site_name)
         )
         return list(result.scalars().all())
 
