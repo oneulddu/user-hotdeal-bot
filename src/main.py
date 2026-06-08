@@ -245,6 +245,7 @@ class BotManager:
         self.logger = logging.getLogger("BotManager")
         self.closed = False
         self.persistence = PersistenceManager()
+        self._db_backfilled_article_keys: set[tuple[str, int]] = set()
 
     async def init_session(self):
         """세션 초기화"""
@@ -529,6 +530,7 @@ class BotManager:
             return
 
         try:
+            saved_article_keys = set()
             async with get_async_session(self.db_engine) as session:
                 repo = ArticleRepository(session)
 
@@ -537,6 +539,9 @@ class BotManager:
                 if articles_to_upsert:
                     # TypedDict to dict conversion for repository
                     count = await repo.bulk_upsert([dict(a) for a in articles_to_upsert])
+                    saved_article_keys.update(
+                        (article["crawler_name"], article["article_id"]) for article in articles_to_upsert
+                    )
                     self.logger.debug("DB upsert: %d article(s)", count)
 
                 # 삭제된 게시글 soft delete
@@ -549,9 +554,45 @@ class BotManager:
                 if result["remove"]:
                     self.logger.debug("DB soft delete: %d article(s)", len(result["remove"]))
 
+            self._db_backfilled_article_keys.update(saved_article_keys)
+
         except Exception as e:
             self.logger.warning("Failed to save to DB: %s", e)
             # DB 저장 실패해도 봇 동작은 계속되어야 함
+
+    async def _backfill_db_from_cache(self) -> None:
+        """현재 메모리 캐시 중 아직 DB 백필하지 않은 게시글을 저장.
+
+        초기 크롤링이나 dump.json 로드로 이미 알고 있는 게시글은 봇 알림
+        델타가 아니므로 _save_to_db()에 잡히지 않는다.
+        """
+        if not hasattr(self, "db_engine") or self.db_engine is None:
+            self.logger.debug("DB engine not initialized, skipping DB cache backfill")
+            return
+
+        articles = []
+        article_keys = set()
+        for cache in self.article_cache.values():
+            for article in cache.values():
+                article_key = (article["crawler_name"], article["article_id"])
+                if article_key in self._db_backfilled_article_keys:
+                    continue
+                articles.append(dict(article))
+                article_keys.add(article_key)
+
+        if not articles:
+            return
+
+        try:
+            async with get_async_session(self.db_engine) as session:
+                repo = ArticleRepository(session)
+                count = await repo.bulk_upsert(articles)
+                self.logger.debug("DB cache backfill: %d article(s)", count)
+
+            self._db_backfilled_article_keys.update(article_keys)
+        except Exception as e:
+            self.logger.warning("Failed to backfill DB from cache: %s", e)
+            # 다음 주기에 다시 시도할 수 있도록 backfilled key는 추가하지 않음
 
     async def send(self, d: CrawlingResult):
         """크롤링 결과를 바탕으로 메시지 전송, 수정, 삭제
@@ -579,6 +620,7 @@ class BotManager:
                 # DB에 저장
                 with logfire.span("save_to_db"):
                     await self._save_to_db(data)
+                    await self._backfill_db_from_cache()
                 # 메시지 보내기
                 with logfire.span("send_messages"):
                     await self.send(data)
