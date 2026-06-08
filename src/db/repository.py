@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -249,7 +249,12 @@ class ArticleRepository:
         Returns:
             List of crawler names
         """
-        result = await self.session.execute(select(Article.crawler_name).distinct().order_by(Article.crawler_name))
+        result = await self.session.execute(
+            select(Article.crawler_name)
+            .distinct()
+            .where(Article.deleted_at.is_(None))
+            .order_by(Article.crawler_name)
+        )
         return list(result.scalars().all())
 
     async def get_distinct_sites(self) -> list[str]:
@@ -258,8 +263,31 @@ class ArticleRepository:
         Returns:
             List of site names
         """
-        result = await self.session.execute(select(Article.site_name).distinct().order_by(Article.site_name))
+        result = await self.session.execute(
+            select(Article.site_name)
+            .distinct()
+            .where(Article.deleted_at.is_(None))
+            .order_by(Article.site_name)
+        )
         return list(result.scalars().all())
+
+    async def count_by_crawler(self) -> list[tuple[str, int]]:
+        """Count active articles grouped by crawler name."""
+        return await self._count_active_by(Article.crawler_name)
+
+    async def count_by_site(self) -> list[tuple[str, int]]:
+        """Count active articles grouped by site name."""
+        return await self._count_active_by(Article.site_name)
+
+    async def _count_active_by(self, column: ColumnElement[str]) -> list[tuple[str, int]]:
+        stmt = (
+            select(column.label("name"), func.count(Article.id).label("count"))
+            .where(Article.deleted_at.is_(None))
+            .group_by(column)
+            .order_by(column)
+        )
+        result = await self.session.execute(stmt)
+        return [(row._mapping["name"], row._mapping["count"]) for row in result.all()]
 
 
 class ApiKeyRepository:
