@@ -344,12 +344,12 @@ class TelegramBot(BaseBot[telegram.Message]):
                     e.__class__.__name__, e, data["title"], data["url"], self.target
                 )
                 logfire.error("Telegram error", error=str(e), error_type=e.__class__.__name__, target=self.target)
-            finally:
-                if msg is None and retry:
-                    msg = await self._send(data, retry=False)
-                if msg is not None:
-                    await self.set_msg_obj(data, msg)
-                return msg
+
+            if msg is None and retry:
+                msg = await self._send(data, retry=False)
+            if msg is not None:
+                await self.set_msg_obj(data, msg)
+            return msg
 
     async def _edit(self, data: BaseArticle, retry: bool = False):
         msg = await self.get_msg_obj(data)
