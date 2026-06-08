@@ -69,9 +69,9 @@ services:
       - TZ=Asia/Seoul
       - DATABASE_URL=mysql+aiomysql://hotdeal:hotdealpassword@db:3306/hotdeal
     #command: ["watchfiles", "--filter", "python", "python -m src.main", "./src"]
-    # depends_on:
-    #   migrate:
-    #     condition: service_completed_successfully
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   # FastAPI API server (with hot reload)
   api:

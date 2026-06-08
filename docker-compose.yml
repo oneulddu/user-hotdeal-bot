@@ -15,6 +15,22 @@ services:
     environment:
       - TZ=Asia/Seoul
       - DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Alembic migration runner (one-shot)
+  migrate:
+    build:
+      context: .
+      target: base
+    container_name: user-hotdeal-bot-migrate
+    volumes:
+      - hotdeal-db:/app/data
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db
+    command: ["alembic", "upgrade", "head"]
 
   # FastAPI API server
   api:
@@ -32,7 +48,8 @@ services:
       - TZ=Asia/Seoul
       - DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db
     depends_on:
-      - crawler
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   hotdeal-db:
