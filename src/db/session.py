@@ -7,10 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 # Default database URL (SQLite for development)
-DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./hotdeal.db"
+DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/hotdeal.db"
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 # Cached configs by path
 _config_cache: dict[str, dict[str, Any]] = {}
@@ -66,9 +70,39 @@ def get_database_echo(config_path: str = "config.yaml") -> bool:
 
     # Priority: config.yaml > env var > default (False)
     if "echo" in db_config:
-        return bool(db_config["echo"])
+        return _parse_bool(db_config["echo"])
 
-    return os.getenv("DATABASE_ECHO", "").lower() == "true"
+    return _parse_bool(os.getenv("DATABASE_ECHO"), default=False)
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    """Parse config/env boolean values without treating 'false' as truthy."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_VALUES:
+            return True
+        if normalized in _FALSE_VALUES:
+            return False
+    return default
+
+
+def ensure_sqlite_database_parent(database_url: str) -> None:
+    """Create the parent directory for file-based SQLite URLs."""
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        return
+
+    database = url.database
+    if not database or database == ":memory:" or database.startswith("file:"):
+        return
+
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_timezone(config_path: str = "config.yaml") -> str:
@@ -96,6 +130,7 @@ def get_async_engine(database_url: str | None = None) -> AsyncEngine:
         AsyncEngine instance
     """
     url = database_url or get_database_url()
+    ensure_sqlite_database_parent(url)
 
     # SQLite specific settings
     connect_args = {}

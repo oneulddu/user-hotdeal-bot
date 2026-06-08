@@ -177,6 +177,7 @@ docs
 idea
 AGENTS.md
 hotdeal.db
+data/
 .claude
 .serena
 .ruff_cache
