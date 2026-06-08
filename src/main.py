@@ -5,6 +5,7 @@ import logging.config
 import os
 import signal
 import sys
+import tempfile
 import time
 from typing import Any, NotRequired, TypedDict
 
@@ -131,6 +132,31 @@ class PersistenceManager:
     def __init__(self):
         self.logger = logging.getLogger("PersistenceManager")
 
+    def _empty_article_cache(self, crawlers: dict[str, crawler.BaseCrawler]) -> dict[str, crawler.ArticleCollection]:
+        return {crawler_name: crawler.ArticleCollection() for crawler_name in crawlers.keys()}
+
+    def _validate_dump_data(self, data: object) -> DumpedData | None:
+        if not isinstance(data, dict):
+            self.logger.warning("Dump data must be a JSON object; ignoring dump file")
+            return None
+
+        missing_keys = {"version", "crawler", "bot"} - data.keys()
+        if missing_keys:
+            self.logger.warning("Dump file missing required key(s): %s; ignoring dump file", sorted(missing_keys))
+            return None
+
+        if not isinstance(data["version"], str):
+            self.logger.warning("Dump file version must be a string; ignoring dump file")
+            return None
+        if not isinstance(data["crawler"], dict):
+            self.logger.warning("Dump file crawler data must be an object; ignoring dump file")
+            return None
+        if not isinstance(data["bot"], dict):
+            self.logger.warning("Dump file bot data must be an object; ignoring dump file")
+            return None
+
+        return data  # type: ignore[return-value]
+
     async def deserialize_articles(
         self, crawler_data: dict[str, crawler.ArticleCollection], crawlers: dict[str, crawler.BaseCrawler]
     ) -> dict[str, crawler.ArticleCollection]:
@@ -200,14 +226,18 @@ class PersistenceManager:
         if not os.path.isfile(dump_file_path):
             self.logger.warning("Dump file doesn't exists")
             # 빈 article_cache 초기화
-            return {crawler_name: crawler.ArticleCollection() for crawler_name in crawlers.keys()}
+            return self._empty_article_cache(crawlers)
 
         try:
             with open(dump_file_path, "r", encoding="utf-8") as f:
-                data: DumpedData = json.load(f)
+                raw_data = json.load(f)
         except json.JSONDecodeError:
-            self.logger.error("Dump JSON file decode error occured")
-            return {crawler_name: crawler.ArticleCollection() for crawler_name in crawlers.keys()}
+            self.logger.error("Dump JSON file decode error occurred")
+            return self._empty_article_cache(crawlers)
+
+        data = self._validate_dump_data(raw_data)
+        if data is None:
+            return self._empty_article_cache(crawlers)
 
         self.logger.info("App version %s, dump file version %s", __version__, data["version"])
 
@@ -236,8 +266,25 @@ class PersistenceManager:
             "crawler": article_cache,
             "bot": {bot_name: await bot_obj.to_dict() for bot_name, bot_obj in bots.items()},
         }
-        with open(dump_file_path, "w", encoding="utf-8") as f:
-            json.dump(dump, f, ensure_ascii=False, indent=2, default=bot.message_serializer)
+        dump_dir = os.path.dirname(os.path.abspath(dump_file_path))
+        tmp_file_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=dump_dir,
+                prefix=f".{os.path.basename(dump_file_path)}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_file_path = f.name
+                json.dump(dump, f, ensure_ascii=False, indent=2, default=bot.message_serializer)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file_path, dump_file_path)
+        finally:
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
 
 
 class BotManager:
@@ -247,6 +294,7 @@ class BotManager:
         self.persistence = PersistenceManager()
         self._db_backfilled_article_keys: set[tuple[str, int]] = set()
         self._run_lock = asyncio.Lock()
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     async def init_session(self):
         """세션 초기화"""
@@ -392,9 +440,17 @@ class BotManager:
             self.logger.error("Config file decode error occurred: %s", e)
             return
         # 크롤러 초기화
-        await self.init_crawlers(config["crawlers"])
+        crawlers = config.get("crawlers")
+        if crawlers is None:
+            self.logger.error("Config file missing required key: crawlers")
+            crawlers = {}
+        await self.init_crawlers(crawlers)
         # 메신저 봇 초기화
-        await self.init_bots(config["bots"])
+        bots = config.get("bots")
+        if bots is None:
+            self.logger.error("Config file missing required key: bots")
+            bots = {}
+        await self.init_bots(bots)
 
     async def dump(self, dump_file_path: str = "dump.json"):
         """데이터를 지정한 경로의 json 파일에 저장
@@ -436,6 +492,11 @@ class BotManager:
 
         # 글 목록 페이지 뒤로 넘어가 추적하지 않게 된 게시글들 메모리에서 삭제
         self.article_cache[name].remove_expired(id_min)
+        self._db_backfilled_article_keys.intersection_update(
+            (crawler_name, article_id)
+            for crawler_name, cache in self.article_cache.items()
+            for article_id in cache.keys()
+        )
         # 봇 메시지 객체들도 비슷한 방식으로 삭제
         for bot_name, bot_instance in self.bots.items():
             await bot_instance.remove_expired_msg_obj(name, id_min)
@@ -644,6 +705,12 @@ class BotManager:
                 self.logger.exception(e)
                 logfire.error("Crawling cycle failed", error=str(e))
 
+    def _schedule_crawling_task(self, loop: asyncio.AbstractEventLoop) -> asyncio.Task[None]:
+        task = loop.create_task(self._run())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
+
     async def run(self):
         """크롤링 및 메시지 전송 작업을 주어진 시간(60초)마다 한번씩 영원히 반복"""
         with logfire.span("init_application"):
@@ -651,7 +718,7 @@ class BotManager:
         self.logger.info("Loop start")
         loop = asyncio.get_running_loop()
         while not self.closed:
-            loop.create_task(self._run())
+            self._schedule_crawling_task(loop)
             await asyncio.sleep(60)
         self.logger.debug("Loop stop (bot closed)")
 
