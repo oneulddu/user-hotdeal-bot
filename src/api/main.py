@@ -16,6 +16,13 @@ from .schemas import HealthResponse
 # Application version (sync with pyproject.toml)
 VERSION = "2.2.1"
 
+
+def get_cors_origins() -> list[str]:
+    """Get CORS origins from API_CORS_ORIGINS env var."""
+    raw_origins = os.getenv("API_CORS_ORIGINS", "*")
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+
 # 타임존 설정 (config.yaml > TZ 환경변수 > UTC)
 _timezone = get_timezone()
 os.environ["TZ"] = _timezone
@@ -43,11 +50,13 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+cors_origins = get_cors_origins()
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure as needed
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -30,11 +30,14 @@ HEADERS = {
 
 def load_config_file(config_path: str = "config.yaml") -> "Config":
     """YAML 또는 JSON 설정 파일을 로드합니다."""
+    if not os.path.isfile(config_path):
+        return {}
+
     with open(config_path, "r", encoding="utf-8") as f:
         if config_path.endswith(".yaml") or config_path.endswith(".yml"):
-            return yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
         else:
-            return json.load(f)
+            return json.load(f) or {}
 
 
 # 통합 설정 파일에서 로깅 설정 로드
@@ -95,7 +98,7 @@ class LogfireConfig(TypedDict, total=False):
     token: str
 
 
-class Config(TypedDict):
+class Config(TypedDict, total=False):
     crawlers: dict[str, CrawlerConfig]
     bots: dict[str, BotConfig]
     logging: dict[str, Any]

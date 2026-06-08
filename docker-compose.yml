@@ -1,7 +1,7 @@
 services:
   # Crawler + Telegram Bot service (original)
   crawler:
-    image: ghcr.io/krepe90/user-hotdeal-bot:latest
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
     build:
       context: .
       target: crawler
@@ -18,7 +18,7 @@ services:
 
   # FastAPI API server
   api:
-    image: ghcr.io/krepe90/user-hotdeal-bot:api
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/api:latest
     build:
       context: .
       target: api
@@ -33,29 +33,6 @@ services:
       - DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db
     depends_on:
       - crawler
-
-  # MariaDB backup to S3-compatible storage (cron via supercronic)
-  backup:
-    build:
-      context: .
-      dockerfile: Dockerfile.backup
-    container_name: user-hotdeal-backup
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Seoul
-      - 'BACKUP_SCHEDULE=0 18 * * *'
-      - MARIADB_HOST=db
-      - MARIADB_PORT=3306
-      - MARIADB_USER=hotdeal
-      - MARIADB_PASSWORD=hotdealpassword
-      - MARIADB_DATABASE=hotdeal
-      - S3_BUCKET=hotdeal-backup
-      - S3_PREFIX=mariadb
-      - S3_ENDPOINT=http://minio:9000
-      - S3_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=change-me
-      - AWS_SECRET_ACCESS_KEY=change-me
-      - RETENTION_DAYS=70
 
 volumes:
   hotdeal-db:

@@ -2,9 +2,9 @@
 
 from datetime import datetime
 
-from ulid import ULID
 from sqlalchemy import JSON, DateTime, Index, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from ulid import ULID
 
 
 def generate_ulid() -> str:

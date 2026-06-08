@@ -1,3 +1,5 @@
+import os
+
 import aiohttp
 import pytest
 import pytest_asyncio
@@ -7,6 +9,11 @@ from src import crawler
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 }
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_EXTERNAL_CRAWLER_TESTS") != "1",
+    reason="external crawler tests require live sites; set RUN_EXTERNAL_CRAWLER_TESTS=1 to run",
+)
 
 
 @pytest_asyncio.fixture

@@ -25,7 +25,7 @@ services:
 
   # Alembic migration runner (one-shot)
   migrate:
-    image: ghcr.io/krepe90/user-hotdeal-bot/crawler:latest
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
     container_name: hotdeal-migrate
     environment:
       - TZ=Asia/Seoul
@@ -39,7 +39,7 @@ services:
 
   # Crawler + Telegram Bot service
   crawler:
-    image: ghcr.io/krepe90/user-hotdeal-bot/crawler:latest
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
     container_name: hotdeal-crawler
     restart: unless-stopped
     volumes:
@@ -57,7 +57,7 @@ services:
 
   # FastAPI API server
   api:
-    image: ghcr.io/krepe90/user-hotdeal-bot/api:latest
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/api:latest
     container_name: hotdeal-api
     restart: unless-stopped
     ports:
@@ -73,7 +73,7 @@ services:
 
   # MariaDB backup to S3-compatible storage (cron via supercronic)
   backup:
-    image: ghcr.io/krepe90/user-hotdeal-bot/backup:latest
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/backup:latest
     container_name: hotdeal-backup
     restart: unless-stopped
     environment:
@@ -99,7 +99,7 @@ services:
 
   # FlareTunnel rotating proxy (optional - uncomment if needed)
   # flaretunnel:
-  #   image: ghcr.io/krepe90/user-hotdeal-bot/flaretunnel:latest
+  #   image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/flaretunnel:latest
   #   container_name: hotdeal-flaretunnel
   #   restart: unless-stopped
   #   ports:
