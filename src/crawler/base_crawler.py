@@ -87,7 +87,7 @@ class BaseCrawler(metaclass=ABCMeta):
         self.ssl_ca_cert = ssl_ca_cert
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
         self._prev_status = 200
-        
+
         # SSL 컨텍스트 설정
         self._ssl_context: ssl.SSLContext | bool | None = None
         if not ssl_verify:
