@@ -8,7 +8,16 @@ from .repository import (
     GuestRateLimitRepository,
     SettingsRepository,
 )
-from .session import close_db, get_async_engine, get_async_session, get_database_url, get_engine, get_timezone, init_db
+from .session import (
+    close_db,
+    ensure_sqlite_database_parent,
+    get_async_engine,
+    get_async_session,
+    get_database_url,
+    get_engine,
+    get_timezone,
+    init_db,
+)
 
 __all__ = [
     # Models
@@ -20,6 +29,7 @@ __all__ = [
     "Settings",
     # Session
     "get_database_url",
+    "ensure_sqlite_database_parent",
     "get_timezone",
     "get_async_engine",
     "get_async_session",

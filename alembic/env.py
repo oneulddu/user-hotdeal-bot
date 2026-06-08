@@ -6,7 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 # Import models for autogenerate support
 from src.db.models import Base
-from src.db.session import get_database_url
+from src.db.session import ensure_sqlite_database_parent, get_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -17,6 +17,7 @@ config = context.config
 db_url = get_database_url()
 db_url = db_url.replace("+aiosqlite", "")  # sqlite+aiosqlite -> sqlite
 db_url = db_url.replace("+aiomysql", "+pymysql")  # mysql+aiomysql -> mysql+pymysql
+ensure_sqlite_database_parent(db_url)
 config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.

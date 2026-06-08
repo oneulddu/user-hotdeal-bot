@@ -60,6 +60,37 @@ async def test_guest_rate_limit_resets_expired_window():
 
 
 @pytest.mark.asyncio
+async def test_guest_rate_limit_cleanup_deletes_only_old_records():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        session.add_all(
+            [
+                GuestRateLimit(
+                    ip_address="old",
+                    request_count=1,
+                    window_start=datetime.now() - timedelta(minutes=120),
+                ),
+                GuestRateLimit(
+                    ip_address="recent",
+                    request_count=1,
+                    window_start=datetime.now(),
+                ),
+            ]
+        )
+        await session.flush()
+
+        deleted_count = await GuestRateLimitRepository(session).cleanup_old_records(older_than_minutes=60)
+        result = await session.execute(select(GuestRateLimit.ip_address))
+
+    await engine.dispose()
+
+    assert deleted_count == 1
+    assert set(result.scalars()) == {"recent"}
+
+
+@pytest.mark.asyncio
 async def test_api_key_rate_limit_does_not_increment_past_limit():
     engine = get_async_engine("sqlite+aiosqlite:///:memory:")
     await init_db(engine)
@@ -102,3 +133,34 @@ async def test_api_key_rate_limit_resets_expired_window():
     await engine.dispose()
 
     assert rate_limit.request_count == 1
+
+
+@pytest.mark.asyncio
+async def test_api_key_rate_limit_cleanup_deletes_only_old_records():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        session.add_all(
+            [
+                ApiKeyRateLimit(
+                    api_key_id=1,
+                    request_count=1,
+                    window_start=datetime.now() - timedelta(minutes=120),
+                ),
+                ApiKeyRateLimit(
+                    api_key_id=2,
+                    request_count=1,
+                    window_start=datetime.now(),
+                ),
+            ]
+        )
+        await session.flush()
+
+        deleted_count = await ApiKeyRateLimitRepository(session).cleanup_old_records(older_than_minutes=60)
+        result = await session.execute(select(ApiKeyRateLimit.api_key_id))
+
+    await engine.dispose()
+
+    assert deleted_count == 1
+    assert set(result.scalars()) == {2}

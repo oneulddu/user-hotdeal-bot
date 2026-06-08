@@ -8,6 +8,24 @@ require() {
   fi
 }
 
+normalize_s3_prefix() {
+  local prefix="${1:-}"
+  prefix="${prefix#/}"
+  prefix="${prefix%/}"
+  printf '%s' "$prefix"
+}
+
+validate_retention_days() {
+  local days="${1:-}"
+  if [[ -z "$days" ]]; then
+    return
+  fi
+  if [[ ! "$days" =~ ^[0-9]+$ || "$days" -lt 1 ]]; then
+    echo "RETENTION_DAYS must be a positive integer when set: ${days}" >&2
+    exit 1
+  fi
+}
+
 # Required DB connection settings
 require MARIADB_HOST
 require MARIADB_USER
@@ -19,7 +37,7 @@ MARIADB_PORT=${MARIADB_PORT:-3306}
 # Required S3/minio settings
 require S3_BUCKET
 
-S3_PREFIX=${S3_PREFIX:-mariadb}
+S3_PREFIX=$(normalize_s3_prefix "${S3_PREFIX:-mariadb}")
 S3_ENDPOINT=${S3_ENDPOINT:-}
 S3_REGION=${S3_REGION:-us-east-1}
 AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-$S3_REGION}
@@ -28,12 +46,17 @@ export AWS_DEFAULT_REGION
 BACKUP_NAME_PREFIX=${BACKUP_NAME_PREFIX:-hotdeal}
 BACKUP_TMP_DIR=${BACKUP_TMP_DIR:-/tmp}
 RETENTION_DAYS=${RETENTION_DAYS:-}
+validate_retention_days "$RETENTION_DAYS"
 TIMESTAMP=${BACKUP_TIMESTAMP_OVERRIDE:-$(TZ=${TZ:-UTC} date +"%Y%m%dT%H%M%S%Z")}
 BACKUP_FILENAME="${BACKUP_NAME_PREFIX}-mariadb-${TIMESTAMP}.sql.gz"
 
 mkdir -p "$BACKUP_TMP_DIR"
 
-DEST_URI="s3://${S3_BUCKET}/${S3_PREFIX}/${BACKUP_FILENAME}"
+if [[ -n "$S3_PREFIX" ]]; then
+  DEST_URI="s3://${S3_BUCKET}/${S3_PREFIX}/${BACKUP_FILENAME}"
+else
+  DEST_URI="s3://${S3_BUCKET}/${BACKUP_FILENAME}"
+fi
 
 AWS_ARGS=()
 if [[ -n "$S3_ENDPOINT" ]]; then
@@ -45,6 +68,7 @@ command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
 
 tmp_sql="${BACKUP_TMP_DIR}/${BACKUP_FILENAME%.gz}"
 tmp_gz="${BACKUP_TMP_DIR}/${BACKUP_FILENAME}"
+trap 'rm -f "$tmp_sql" "$tmp_gz"' EXIT
 
 echo "[backup] starting dump to ${tmp_gz}" >&2
 mysqldump \
@@ -85,5 +109,4 @@ if [[ -n "$RETENTION_DAYS" ]]; then
   fi
 fi
 
-rm -f "$tmp_gz"
 echo "[backup] completed" >&2

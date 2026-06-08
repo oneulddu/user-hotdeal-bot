@@ -29,6 +29,42 @@ def test_config_example_allows_database_url_env_override(monkeypatch):
         db_session._config_cache.clear()
 
 
+def test_default_database_url_uses_data_directory_and_creates_parent(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db_session._config_cache.clear()
+
+    try:
+        database_url = db_session.get_database_url("missing-config.yaml")
+        db_session.ensure_sqlite_database_parent(database_url)
+    finally:
+        db_session._config_cache.clear()
+
+    assert database_url == "sqlite+aiosqlite:///./data/hotdeal.db"
+    assert (tmp_path / "data").is_dir()
+
+
+def test_database_echo_parses_string_false_from_config(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text('database:\n  echo: "false"\n', encoding="utf-8")
+    db_session._config_cache.clear()
+
+    try:
+        assert db_session.get_database_echo(str(config)) is False
+    finally:
+        db_session._config_cache.clear()
+
+
+def test_database_echo_parses_env_values(monkeypatch):
+    monkeypatch.setenv("DATABASE_ECHO", "yes")
+    db_session._config_cache.clear()
+
+    try:
+        assert db_session.get_database_echo("missing-config.yaml") is True
+    finally:
+        db_session._config_cache.clear()
+
+
 def test_database_config_cache_is_scoped_by_path(tmp_path):
     first_config = tmp_path / "first.yaml"
     second_config = tmp_path / "second.yaml"
