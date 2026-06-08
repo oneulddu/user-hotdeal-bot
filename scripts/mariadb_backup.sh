@@ -73,7 +73,7 @@ if [[ -n "$RETENTION_DAYS" ]]; then
       --prefix "$S3_PREFIX/" \
       --query "Contents[?LastModified<=\`${cutoff_iso}\`].Key" \
       --output text \
-      "${AWS_ARGS[@]}")
+      "${AWS_ARGS[@]}" | tr '\t' '\n')
     if [[ ${#old_keys[@]} -gt 0 && -n "${old_keys[0]}" && "${old_keys[0]}" != "None" ]]; then
       for key in "${old_keys[@]}"; do
         echo "[backup] deleting ${key}" >&2
