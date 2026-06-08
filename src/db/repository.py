@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -421,16 +421,9 @@ class GuestRateLimitRepository:
             Number of records deleted
         """
         cutoff = datetime.now() - timedelta(minutes=older_than_minutes)
-        result = await self.session.execute(select(GuestRateLimit).where(GuestRateLimit.window_start < cutoff))
-        old_records = result.scalars().all()
-
-        count = 0
-        for record in old_records:
-            await self.session.delete(record)
-            count += 1
-
+        result = await self.session.execute(delete(GuestRateLimit).where(GuestRateLimit.window_start < cutoff))
         await self.session.flush()
-        return count
+        return result.rowcount or 0
 
 
 class ApiKeyRateLimitRepository:
@@ -518,16 +511,9 @@ class ApiKeyRateLimitRepository:
             Number of records deleted
         """
         cutoff = datetime.now() - timedelta(minutes=older_than_minutes)
-        result = await self.session.execute(select(ApiKeyRateLimit).where(ApiKeyRateLimit.window_start < cutoff))
-        old_records = result.scalars().all()
-
-        count = 0
-        for record in old_records:
-            await self.session.delete(record)
-            count += 1
-
+        result = await self.session.execute(delete(ApiKeyRateLimit).where(ApiKeyRateLimit.window_start < cutoff))
         await self.session.flush()
-        return count
+        return result.rowcount or 0
 
 
 class SettingsRepository:
