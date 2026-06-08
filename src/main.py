@@ -246,6 +246,7 @@ class BotManager:
         self.closed = False
         self.persistence = PersistenceManager()
         self._db_backfilled_article_keys: set[tuple[str, int]] = set()
+        self._run_lock = asyncio.Lock()
 
     async def init_session(self):
         """세션 초기화"""
@@ -478,10 +479,15 @@ class BotManager:
         result: CrawlingResult = {"new": [], "update": [], "remove": []}
         # 크롤러별로 웹페이지 크롤링 후 합쳐서 어떤 메시지를 새로 보내거나 정리할지 결정
         st = time.time()
-        results: list[CrawlingResult] = await asyncio.gather(
-            *[self._crawling(name, cwr) for name, cwr in self.crawlers.items()]
+        gathered_results = await asyncio.gather(
+            *[self._crawling(name, cwr) for name, cwr in self.crawlers.items()],
+            return_exceptions=True,
         )
-        for d in results:
+        for crawler_name, d in zip(self.crawlers, gathered_results):
+            if isinstance(d, Exception):
+                self.logger.error("Crawler failed: %s", crawler_name, exc_info=(type(d), d, d.__traceback__))
+                logfire.error("Crawler failed", crawler_name=crawler_name, error=str(d))
+                continue
             result["new"].extend(d["new"])
             result["update"].extend(d["update"])
             result["remove"].extend(d["remove"])
@@ -612,6 +618,16 @@ class BotManager:
 
     async def _run(self):
         """실제 크롤링 및 메시지 전송을 1회 수행, 예외 처리 포함"""
+        if self._run_lock.locked():
+            self.logger.warning("Previous crawling cycle is still running; skipping this cycle")
+            logfire.warn("Crawling cycle skipped because previous cycle is still running")
+            return
+
+        async with self._run_lock:
+            await self._run_locked()
+
+    async def _run_locked(self):
+        """잠금 안에서 한 번의 크롤링 주기를 수행."""
         with logfire.span("crawling_cycle"):
             try:
                 # 크롤링
