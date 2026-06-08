@@ -1,3 +1,13 @@
+# 앱 설정
+app:
+  timezone: Asia/Seoul  # 타임존 설정 (TZ 환경변수보다 우선)
+
+# 데이터베이스 설정
+database:
+  # url: sqlite+aiosqlite:///./data/hotdeal.db  # DATABASE_URL 환경변수보다 우선
+  # MySQL/MariaDB 예시: mysql+aiomysql://user:password@localhost:3306/hotdeal
+  echo: false  # SQL 쿼리 로깅 (디버깅용)
+
 # 크롤러 설정 (핫딜 게시글 수집)
 crawlers:
   ruliweb_user_hotdeal: # 크롤러 이름
@@ -6,6 +16,9 @@ crawlers:
     crawler_name: RuliwebCrawler    # 크롤러 클래스 이름
     description: 루리웹 유저 예판 핫딜 뽐뿌 게시판  # 설명
     enabled: true   # 크롤러 활성화 여부
+    # proxy: http://127.0.0.1:8080  # (선택) 크롤러별 HTTP/HTTPS 프록시 URL
+    # ssl_verify: true  # (선택) SSL 인증서 검증 여부, false로 설정 시 인증서 검증 비활성화
+    # ssl_ca_cert: /path/to/ca-bundle.crt  # (선택) CA 인증서 경로, ssl_verify가 true일 때만 유효
   ppomppu_board:
     url_list:
     - https://www.ppomppu.co.kr/zboard/zboard.php?id=ppomppu

@@ -1,0 +1,110 @@
+import pytest
+
+from src import crawler
+from src.db import ArticleRepository, get_async_engine, get_async_session, init_db
+from src.main import BotManager
+
+
+def make_article(article_id: int, crawler_name: str = "dummy") -> crawler.BaseArticle:
+    return crawler.BaseArticle(
+        article_id=article_id,
+        title=f"Article {article_id}",
+        category="category",
+        site_name="site",
+        board_name="board",
+        writer_name="writer",
+        crawler_name=crawler_name,
+        url=f"https://example.com/{article_id}",
+        is_end=False,
+        extra={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_db_backfill_saves_initialized_article_cache():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    manager = BotManager()
+    manager.db_engine = engine
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                1: make_article(1),
+                2: make_article(2),
+            }
+        )
+    }
+
+    await manager._backfill_db_from_cache()
+
+    async with get_async_session(engine) as session:
+        articles, total = await ArticleRepository(session).list_articles(limit=10)
+
+    await engine.dispose()
+
+    assert total == 2
+    assert {article.article_id for article in articles} == {1, 2}
+
+
+@pytest.mark.asyncio
+async def test_run_backfills_cache_without_creating_send_delta(monkeypatch):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    manager = BotManager()
+    manager.db_engine = engine
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                1: make_article(1),
+            }
+        )
+    }
+    sent_results = []
+
+    async def crawling():
+        return {"new": [], "update": [], "remove": []}
+
+    async def send(result):
+        sent_results.append(result)
+
+    monkeypatch.setattr(manager, "crawling", crawling)
+    monkeypatch.setattr(manager, "send", send)
+
+    await manager._run()
+
+    async with get_async_session(engine) as session:
+        articles, total = await ArticleRepository(session).list_articles(limit=10)
+
+    await engine.dispose()
+
+    assert total == 1
+    assert articles[0].article_id == 1
+    assert sent_results == [{"new": [], "update": [], "remove": []}]
+
+
+@pytest.mark.asyncio
+async def test_db_backfill_only_saves_new_cache_keys():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    manager = BotManager()
+    manager.db_engine = engine
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                1: make_article(1),
+            }
+        )
+    }
+
+    await manager._backfill_db_from_cache()
+    manager.article_cache["dummy"][2] = make_article(2)
+    await manager._backfill_db_from_cache()
+
+    async with get_async_session(engine) as session:
+        articles, total = await ArticleRepository(session).list_articles(limit=10)
+
+    await engine.dispose()
+
+    assert total == 2
+    assert manager._db_backfilled_article_keys == {("dummy", 1), ("dummy", 2)}
+    assert {article.article_id for article in articles} == {1, 2}

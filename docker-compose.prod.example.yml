@@ -1,0 +1,119 @@
+# Production Docker Compose Example
+# Copy to docker-compose.prod.yml and configure secrets
+
+services:
+  # MariaDB database
+  db:
+    image: mariadb:11
+    container_name: hotdeal-mariadb
+    restart: unless-stopped
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    environment:
+      - TZ=Asia/Seoul
+      - MARIADB_ROOT_PASSWORD=change-me-root-password
+      - MARIADB_DATABASE=hotdeal
+      - MARIADB_USER=hotdeal
+      - MARIADB_PASSWORD=change-me-db-password
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hotdeal-network
+
+  # Alembic migration runner (one-shot)
+  migrate:
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
+    container_name: hotdeal-migrate
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:change-me-db-password@db:3306/hotdeal
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hotdeal-network
+
+  # Crawler + Telegram Bot service
+  crawler:
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
+    container_name: hotdeal-crawler
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./log:/app/log
+      - ./dump.json:/app/dump.json
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:change-me-db-password@db:3306/hotdeal
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - hotdeal-network
+
+  # FastAPI API server
+  api:
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/api:latest
+    container_name: hotdeal-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:change-me-db-password@db:3306/hotdeal
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - hotdeal-network
+
+  # MariaDB backup to S3-compatible storage (cron via supercronic)
+  backup:
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/backup:latest
+    container_name: hotdeal-backup
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+      - 'BACKUP_SCHEDULE=0 18 * * *'  # Daily at 18:00 UTC (03:00 KST next day)
+      - MARIADB_HOST=db
+      - MARIADB_PORT=3306
+      - MARIADB_USER=hotdeal
+      - MARIADB_PASSWORD=change-me-db-password
+      - MARIADB_DATABASE=hotdeal
+      - S3_BUCKET=change-me-bucket
+      - S3_PREFIX=user-hotdeal-bot
+      - S3_ENDPOINT=https://s3.amazonaws.com
+      - S3_REGION=ap-northeast-2
+      - AWS_ACCESS_KEY_ID=change-me
+      - AWS_SECRET_ACCESS_KEY=change-me
+      - RETENTION_DAYS=30
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hotdeal-network
+
+  # FlareTunnel rotating proxy (optional - uncomment if needed)
+  # flaretunnel:
+  #   image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/flaretunnel:latest
+  #   container_name: hotdeal-flaretunnel
+  #   restart: unless-stopped
+  #   ports:
+  #     - "10937:8080"
+  #   volumes:
+  #     - flaretunnel-data:/data
+  #   command: ["tunnel", "--verbose", "--host", "0.0.0.0"]
+  #   networks:
+  #     - hotdeal-network
+
+networks:
+  hotdeal-network:
+    driver: bridge
+
+volumes:
+  mariadb-data:
+  # flaretunnel-data:  # Uncomment if using flaretunnel

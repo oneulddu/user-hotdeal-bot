@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import logging
 import os
+import ssl
 from abc import ABCMeta, abstractmethod
 from typing import Any, Self, TypedDict
 
@@ -64,13 +65,34 @@ class ArticleCollection(dict[int, BaseArticle]):
 
 
 class BaseCrawler(metaclass=ABCMeta):
-    def __init__(self, name: str, url_list: list[str], session: aiohttp.ClientSession | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        url_list: list[str],
+        session: aiohttp.ClientSession | None = None,
+        proxy: str | None = None,
+        ssl_verify: bool = True,
+        ssl_ca_cert: str | None = None,
+    ) -> None:
         self.session: aiohttp.ClientSession = session if session is not None else aiohttp.ClientSession(trust_env=True)
         self.url_list: list[str] = url_list
         self.cls_name = self.__class__.__name__
         self.name = name
+        self.proxy = proxy
+        self.ssl_verify = ssl_verify
+        self.ssl_ca_cert = ssl_ca_cert
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
         self._prev_status = 200
+        
+        # SSL 컨텍스트 설정
+        self._ssl_context: ssl.SSLContext | bool | None = None
+        if not ssl_verify:
+            # SSL 검증 완전 비활성화
+            self._ssl_context = False
+        elif ssl_ca_cert:
+            # 커스텀 CA 인증서 사용
+            self._ssl_context = ssl.create_default_context(cafile=ssl_ca_cert)
+        # ssl_verify=True이고 ssl_ca_cert=None이면 기본 시스템 CA 사용 (None)
 
     async def get(self) -> ArticleCollection:
         """게시글 데이터를 크롤링 및 파싱하여 ArticleCollection 객체로 반환
@@ -110,8 +132,13 @@ class BaseCrawler(metaclass=ABCMeta):
             aiohttp.ClientResponse | None: 응답 객체 (실패한 경우 None 반환)
         """
         self.logger.debug("Send request to %s", url)
+        request_kwargs: dict[str, Any] = {"allow_redirects": False}
+        if self.proxy is not None:
+            request_kwargs["proxy"] = self.proxy
+        if self._ssl_context is not None:
+            request_kwargs["ssl"] = self._ssl_context
         try:
-            resp = await self.session.get(url, allow_redirects=False)
+            resp = await self.session.get(url, **request_kwargs)
         except aiohttp.ServerTimeoutError as e:
             self.logger.error("Client connection timeout error: %s (%s)", e, url)
             return

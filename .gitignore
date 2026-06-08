@@ -172,3 +172,13 @@ Temporary Items
 ### macOS Patch ###
 # iCloud generated files
 *.icloud
+
+docs
+idea
+AGENTS.md
+hotdeal.db
+.claude
+.serena
+.ruff_cache
+docker-compose.local.yml
+flare-tunnel-data

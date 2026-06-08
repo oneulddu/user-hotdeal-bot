@@ -1,0 +1,135 @@
+services:
+  # MariaDB database
+  db:
+    image: mariadb:11
+    container_name: hotdeal-mariadb
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    environment:
+      - TZ=Asia/Seoul
+      - MARIADB_ROOT_PASSWORD=rootpassword
+      - MARIADB_DATABASE=hotdeal
+      - MARIADB_USER=hotdeal
+      - MARIADB_PASSWORD=hotdealpassword
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # phpMyAdmin
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: hotdeal-phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - PMA_HOST=db
+      - PMA_USER=hotdeal
+      - PMA_PASSWORD=hotdealpassword
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Alembic migration runner (one-shot)
+  migrate:
+    build:
+      context: .
+      target: base
+    container_name: hotdeal-migrate
+    volumes:
+      - ./alembic:/app/alembic:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./src:/app/src:ro
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:hotdealpassword@db:3306/hotdeal
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Crawler + Telegram Bot service (with watchfiles for hot reload)
+  crawler:
+    build:
+      context: .
+      target: crawler
+    container_name: hotdeal-crawler-local
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./log:/app/log
+      - ./dump.json:/app/dump.json
+      - ./src:/app/src:ro
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:hotdealpassword@db:3306/hotdeal
+    #command: ["watchfiles", "--filter", "python", "python -m src.main", "./src"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # FastAPI API server (with hot reload)
+  api:
+    build:
+      context: .
+      target: api
+    container_name: hotdeal-api-local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src:ro
+    environment:
+      - TZ=Asia/Seoul
+      - DATABASE_URL=mysql+aiomysql://hotdeal:hotdealpassword@db:3306/hotdeal
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # MariaDB backup to S3-compatible storage (cron via supercronic)
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    container_name: hotdeal-backup
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+      - 'BACKUP_SCHEDULE=0 18 * * *'
+      - MARIADB_HOST=db
+      - MARIADB_PORT=3306
+      - MARIADB_USER=hotdeal
+      - MARIADB_PASSWORD=hotdealpassword
+      - MARIADB_DATABASE=hotdeal
+      - S3_BUCKET=total-bak
+      - S3_PREFIX=user-hotdeal-bot
+      - S3_ENDPOINT=http://minio:9000
+      - S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=change-me
+      - AWS_SECRET_ACCESS_KEY=change-me
+      - RETENTION_DAYS=70
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # FlareTunnel rotating proxy (Cloudflare Workers)
+  flaretunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.flaretunnel
+    container_name: flaretunnel-local
+    restart: unless-stopped
+    ports:
+      - "10937:8080"
+    volumes:
+      - ./flare-tunnel-data:/data
+    command: ["tunnel", "--verbose", "--host", "0.0.0.0"]
+
+volumes:
+  mariadb-data:
