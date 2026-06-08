@@ -52,7 +52,7 @@ async def get_article(
 ) -> ArticleResponse:
     """Get a single article by ID (ULID)."""
     article = await repo.get_by_id(article_id)
-    if article is None:
+    if article is None or article.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Article with id {article_id} not found",

@@ -93,6 +93,7 @@ async def verify_api_key_or_guest(
             )
 
         await api_key_repo.update_last_used(api_key_value)
+        await session.commit()
         return api_key_value
 
     # Guest access
@@ -114,6 +115,7 @@ async def verify_api_key_or_guest(
             detail=f"Rate limit exceeded. Maximum {guest_rate_limit} requests per minute for guests.",
         )
 
+    await session.commit()
     return None
 
 
