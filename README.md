@@ -110,8 +110,17 @@ docker-compose up -d api
 #### 개별 빌드 및 실행
 
 ```bash
-# 크롤러 빌드 및 실행
+# 크롤러 이미지 빌드
 docker build -t user-hotdeal-bot:crawler --target crawler .
+
+# DB 마이그레이션 실행 (최초 실행 및 스키마 변경 시)
+docker run --rm --name user-hotdeal-bot-migrate \
+  -v hotdeal-db:/app/data \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db \
+  user-hotdeal-bot:crawler \
+  alembic upgrade head
+
+# 크롤러 실행
 docker run -d --name user-hotdeal-bot-crawler \
   -v ./config.yaml:/app/config.yaml:ro \
   -v ./log:/app/log \

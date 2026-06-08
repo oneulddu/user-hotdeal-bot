@@ -58,3 +58,11 @@ def test_local_compose_crawler_waits_for_migrations():
     compose = load_yaml("docker-compose.local.example.yml")
 
     assert compose["services"]["crawler"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+
+
+def test_readme_standalone_docker_path_runs_migrations():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "user-hotdeal-bot-migrate" in readme
+    assert "alembic upgrade head" in readme
+    assert readme.index("alembic upgrade head") < readme.index("--name user-hotdeal-bot-crawler")
