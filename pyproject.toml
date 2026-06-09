@@ -17,6 +17,7 @@ dependencies = [
     "python-telegram-bot>=21.6",
     "python-ulid>=3.1.0",
     "pyyaml>=6.0.2",
+    "scrapling[fetchers]>=0.4.9",
     "sqlalchemy[asyncio]>=2.0.36",
     "uvicorn[standard]>=0.32.0",
 ]
