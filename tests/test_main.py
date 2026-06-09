@@ -9,6 +9,19 @@ from src import crawler
 from src.main import BotManager, PersistenceManager
 
 
+class CloseTrackingCrawler(crawler.BaseCrawler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.closed = False
+
+    async def parsing(self, html: str) -> dict[int, crawler.BaseArticle]:
+        return {}
+
+    async def close(self):
+        self.closed = True
+        await super().close()
+
+
 def test_version():
     from src.api.main import VERSION
     from src.main import __version__
@@ -126,6 +139,37 @@ async def test_init_crawlers_rebuilds_when_cookie_env_value_changes(monkeypatch)
 
     assert second_crawler is not first_crawler
     assert second_crawler.request_cookies == {"foo": "new"}
+
+
+@pytest.mark.asyncio
+async def test_init_crawlers_closes_replaced_and_removed_crawlers(monkeypatch):
+    manager = BotManager()
+    manager.crawlers = {}
+    monkeypatch.setattr(crawler, "CloseTrackingCrawler", CloseTrackingCrawler, raising=False)
+
+    crawler_config = {
+        "tracked": {
+            "url_list": ["https://example.com"],
+            "crawler_name": "CloseTrackingCrawler",
+            "description": "tracked crawler",
+            "enabled": True,
+        }
+    }
+
+    async with aiohttp.ClientSession() as session:
+        manager.session = session
+
+        await manager.init_crawlers(crawler_config)
+        first_crawler = manager.crawlers["tracked"]
+
+        await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "proxy": "http://proxy"}})
+        second_crawler = manager.crawlers["tracked"]
+
+        await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "enabled": False}})
+
+        assert first_crawler.closed is True
+        assert second_crawler.closed is True
+        assert session.closed is False
 
 
 @pytest.mark.asyncio
