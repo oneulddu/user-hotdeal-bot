@@ -18,6 +18,7 @@ async def main(module_name: str, detail: bool = False):
         crawler_instance = crawler.ArcaLiveCrawler(
             "arcalive_hotdeal",
             ["https://arca.live/b/hotdeal"],
+            cookie_env="ARCALIVE_COOKIE",
         )
     elif module_name == "ppomppu":
         crawler_instance = crawler.PpomppuCrawler(

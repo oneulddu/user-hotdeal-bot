@@ -81,6 +81,9 @@ class CrawlerConfig(TypedDict):
     proxy: NotRequired[str | None]
     ssl_verify: NotRequired[bool]  # SSL 인증서 검증 여부 (기본값: True)
     ssl_ca_cert: NotRequired[str | None]  # CA 인증서 경로
+    headers: NotRequired[dict[str, str]]  # 크롤러별 추가 HTTP 요청 헤더
+    cookie: NotRequired[str | None]  # 크롤러별 쿠키 문자열
+    cookie_env: NotRequired[str | None]  # 쿠키 문자열을 읽을 환경변수 이름
 
 
 class BotConfig(TypedDict):
@@ -333,12 +336,20 @@ class BotManager:
                 _new_proxy = crawler_config.get("proxy")
                 _new_ssl_verify = crawler_config.get("ssl_verify", True)
                 _new_ssl_ca_cert = crawler_config.get("ssl_ca_cert")
+                _new_headers = crawler_config.get("headers")
+                _new_cookie = crawler_config.get("cookie")
+                _new_cookie_env = crawler_config.get("cookie_env")
+                _new_resolved_cookie = crawler.BaseCrawler.resolve_cookie(_new_cookie, _new_cookie_env)
                 if (
                     _cwr.url_list == crawler_config["url_list"]
                     and _cwr.cls_name == crawler_config["crawler_name"]
                     and getattr(_cwr, "proxy", None) == _new_proxy
                     and getattr(_cwr, "ssl_verify", True) == _new_ssl_verify
                     and getattr(_cwr, "ssl_ca_cert", None) == _new_ssl_ca_cert
+                    and getattr(_cwr, "config_request_headers", None) == (_new_headers or {})
+                    and getattr(_cwr, "config_cookie", None) == _new_cookie
+                    and getattr(_cwr, "cookie_env", None) == _new_cookie_env
+                    and getattr(_cwr, "cookie", None) == _new_resolved_cookie
                 ):
                     self.crawlers[crawler_name] = _cwr
                     self.logger.info("Crawler reused: %s (%s)", crawler_name, crawler_config["crawler_name"])
@@ -362,6 +373,9 @@ class BotManager:
                 proxy=crawler_config.get("proxy"),
                 ssl_verify=crawler_config.get("ssl_verify", True),
                 ssl_ca_cert=crawler_config.get("ssl_ca_cert"),
+                request_headers=crawler_config.get("headers"),
+                cookie=crawler_config.get("cookie"),
+                cookie_env=crawler_config.get("cookie_env"),
             )
             self.logger.info("Crawler initialized: %s (%s)", crawler_name, crawler_cls_name)
         # 남은 크롤러 객체 목록 출력 (삭제될 크롤러)

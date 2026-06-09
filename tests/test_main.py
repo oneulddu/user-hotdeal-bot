@@ -2,6 +2,7 @@ import asyncio
 import json
 import tomllib
 
+import aiohttp
 import pytest
 
 from src import crawler
@@ -95,6 +96,36 @@ async def test_init_bots_skips_disabled_before_class_lookup(caplog):
 
     assert manager.bots == {}
     assert "Unknown bot class" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_init_crawlers_rebuilds_when_cookie_env_value_changes(monkeypatch):
+    manager = BotManager()
+    manager.crawlers = {}
+
+    crawler_config = {
+        "dummy": {
+            "url_list": ["https://example.com"],
+            "crawler_name": "DummyCrawler",
+            "description": "dummy crawler",
+            "enabled": True,
+            "cookie_env": "HOTDEAL_TEST_COOKIE",
+        }
+    }
+
+    async with aiohttp.ClientSession() as session:
+        manager.session = session
+
+        monkeypatch.setenv("HOTDEAL_TEST_COOKIE", "foo=old")
+        await manager.init_crawlers(crawler_config)
+        first_crawler = manager.crawlers["dummy"]
+
+        monkeypatch.setenv("HOTDEAL_TEST_COOKIE", "foo=new")
+        await manager.init_crawlers(crawler_config)
+        second_crawler = manager.crawlers["dummy"]
+
+    assert second_crawler is not first_crawler
+    assert second_crawler.request_cookies == {"foo": "new"}
 
 
 @pytest.mark.asyncio
