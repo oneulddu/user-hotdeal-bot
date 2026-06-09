@@ -173,6 +173,37 @@ async def test_init_crawlers_closes_replaced_and_removed_crawlers(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_close_closes_manager_owned_shared_session(monkeypatch):
+    manager = BotManager()
+    dumped = False
+    db_closed = False
+
+    async def dump():
+        nonlocal dumped
+        dumped = True
+
+    async def close_db():
+        nonlocal db_closed
+        db_closed = True
+
+    monkeypatch.setattr("src.main.close_db", close_db)
+    manager.dump = dump
+    manager.bots = {}
+
+    session = aiohttp.ClientSession()
+    manager.session = session
+    tracking_crawler = CloseTrackingCrawler("tracked", ["https://example.com"], session=session)
+    manager.crawlers = {"tracked": tracking_crawler}
+
+    await manager.close()
+
+    assert tracking_crawler.closed is True
+    assert session.closed is True
+    assert dumped is True
+    assert db_closed is True
+
+
+@pytest.mark.asyncio
 async def test_schedule_crawling_task_keeps_reference_until_done():
     manager = BotManager()
     started = asyncio.Event()

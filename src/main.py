@@ -748,6 +748,8 @@ class BotManager:
             self.logger.debug("crawler close: %s", k)
             if not cwr.session.closed:
                 await cwr.close()
+        if (session := getattr(self, "session", None)) is not None and not session.closed:
+            await session.close()
         # 봇 세션 닫기
         for bot_name, bot_instance in self.bots.items():
             self.logger.debug("bot close: %s", bot_name)
