@@ -1,10 +1,13 @@
 # 아카라이브 핫딜 채널
 # https://arca.live/b/hotdeal
 # API 문서화되면 전환 예정
+import datetime
+import os
 import re
 
 import aiohttp
 from bs4 import BeautifulSoup
+from scrapling.fetchers import AsyncStealthySession
 
 from .base_crawler import BaseArticle, BaseCrawler
 
@@ -122,3 +125,143 @@ class ArcaLiveCrawler(BaseCrawler):
                 },
             }
         return data
+
+
+class ArcaLiveCrawlerV2(ArcaLiveCrawler):
+    """Scrapling-based ArcaLive crawler for Cloudflare-protected responses."""
+
+    SCRAPLING_WAIT_SELECTOR = ".list-table"
+    SCRAPLING_USER_DATA_DIR = "./data/scrapling-arcalive"
+
+    def __init__(
+        self,
+        name: str,
+        url_list: list[str],
+        session: aiohttp.ClientSession | None = None,
+        proxy: str | None = None,
+        ssl_verify: bool = True,
+        ssl_ca_cert: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        cookie: str | None = None,
+        cookie_env: str | None = None,
+        scrapling_session: AsyncStealthySession | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            url_list,
+            session=session,
+            proxy=proxy,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
+            request_headers=request_headers,
+            cookie=cookie,
+            cookie_env=cookie_env,
+        )
+        self._scrapling_session = scrapling_session
+        self._scrapling_session_started = False
+        self._scrapling_useragent = self._configured_useragent(request_headers or {})
+
+    @staticmethod
+    def _configured_useragent(headers: dict[str, str]) -> str | None:
+        for key, value in headers.items():
+            if key.lower() == "user-agent":
+                return value
+        return None
+
+    def _scrapling_extra_headers(self) -> dict[str, str]:
+        return {key: value for key, value in self.request_headers.items() if key.lower() != "user-agent"}
+
+    def _scrapling_cookies(self) -> list[dict[str, str]]:
+        if not self.request_cookies or not self.url_list:
+            return []
+        return [{"name": key, "value": value, "url": self.url_list[0]} for key, value in self.request_cookies.items()]
+
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    async def _ensure_scrapling_session(self) -> AsyncStealthySession:
+        if self._scrapling_session is None:
+            kwargs = {
+                "max_pages": 1,
+                "headless": self._env_bool("ARCALIVE_SCRAPLING_HEADLESS", True),
+                "disable_resources": self._env_bool("ARCALIVE_SCRAPLING_DISABLE_RESOURCES", False),
+                "network_idle": True,
+                "load_dom": True,
+                "google_search": False,
+                "solve_cloudflare": True,
+                "locale": "ko-KR",
+                "timezone_id": "Asia/Seoul",
+                "proxy": self.proxy,
+                "cookies": self._scrapling_cookies() or None,
+                "user_data_dir": os.getenv("ARCALIVE_SCRAPLING_USER_DATA_DIR", self.SCRAPLING_USER_DATA_DIR),
+                "hide_canvas": True,
+                "block_webrtc": True,
+            }
+            if self._scrapling_useragent:
+                kwargs["useragent"] = self._scrapling_useragent
+            self._scrapling_session = AsyncStealthySession(**kwargs)
+
+        if not self._scrapling_session_started:
+            await self._scrapling_session.start()
+            self._scrapling_session_started = True
+        return self._scrapling_session
+
+    async def request(self, url: str) -> str | None:
+        self.logger.debug("Send Scrapling request to %s", url)
+        try:
+            scrapling_session = await self._ensure_scrapling_session()
+            response = await scrapling_session.fetch(
+                url,
+                extra_headers=self._scrapling_extra_headers(),
+                google_search=False,
+                solve_cloudflare=True,
+                wait_selector=self.SCRAPLING_WAIT_SELECTOR,
+                wait_selector_state="attached",
+                timeout=self._env_int("ARCALIVE_SCRAPLING_TIMEOUT_MS", 90_000),
+                wait=self._env_int("ARCALIVE_SCRAPLING_WAIT_MS", 5_000),
+            )
+        except Exception as e:
+            self.logger.error("Scrapling request failed: %s (%s)", e, url)
+            return None
+
+        if response.status != 200:
+            if response.status != self._prev_status:
+                self.logger.error("Scrapling response error: %s (%s)", response.status, url)
+                await self.dump_scrapling_response(response)
+            else:
+                self.logger.info("Scrapling response error [skip]: %s (%s)", response.status, url)
+            self._prev_status = response.status
+            return None
+
+        self._prev_status = response.status
+        return response.html_content
+
+    async def dump_scrapling_response(self, response) -> None:
+        current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join("error", f"{current_datetime}_{self.name}.html")
+
+        if not os.path.exists("error"):
+            os.makedirs("error")
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(response.html_content)
+
+    async def close(self):
+        if self._scrapling_session_started and self._scrapling_session is not None:
+            await self._scrapling_session.close()
+            self._scrapling_session_started = False
+        await super().close()

@@ -93,6 +93,46 @@ docker compose up -d api        # API 서버만 (http://localhost:8000)
 
 운영 예시는 [`docker-compose.prod.example.yml`](docker-compose.prod.example.yml), 로컬 예시는 [`docker-compose.local.example.yml`](docker-compose.local.example.yml) 을 참고하세요.
 
+<details>
+<summary>Compose 없이 단독 <code>docker run</code> 으로 실행하기</summary>
+
+Compose를 쓰지 않을 때는 **마이그레이션 → 크롤러 → (선택) API** 순서로 직접 실행합니다. 크롤러를 띄우기 전에 반드시 마이그레이션을 먼저 수행하세요.
+
+```bash
+# 0) 이미지 빌드
+docker build -t user-hotdeal-bot:crawler --target crawler .
+docker build -t user-hotdeal-bot:crawler-scrapling --target crawler-scrapling .  # 아카라이브 v2 실험용
+docker build -t user-hotdeal-bot:api --target api .
+
+# 1) DB 마이그레이션 (최초 1회 및 스키마 변경 시)
+docker run --rm --name user-hotdeal-bot-migrate \
+  -v hotdeal-db:/app/data \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db \
+  user-hotdeal-bot:crawler \
+  alembic upgrade head
+
+# 2) 크롤러 + 텔레그램 봇
+docker run -d --name user-hotdeal-bot-crawler \
+  -e TZ=Asia/Seoul \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./log:/app/log \
+  -v ./dump.json:/app/dump.json \
+  -v hotdeal-db:/app/data \
+  user-hotdeal-bot:crawler
+
+# 3) (선택) API 서버
+docker run -d --name user-hotdeal-bot-api \
+  -p 8000:8000 \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db \
+  -v hotdeal-db:/app/data \
+  user-hotdeal-bot:api
+```
+
+> 크롤러와 API는 `hotdeal-db` 볼륨으로 같은 SQLite DB를 공유합니다.
+
+</details>
+
 ### 3. 로컬에서 실행 ([uv](https://docs.astral.sh/uv/))
 
 ```bash
@@ -116,6 +156,28 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 | `bots` | 메시지 전송 봇. `bot_name` 은 [`src/bot.py`](src/bot.py) 에 정의된 클래스명, `kwargs` 로 토큰 등 전달 |
 | `logging` | [`logging.config.dictConfig`](https://docs.python.org/ko/3/howto/logging-cookbook.html#customizing-handlers-with-dictconfig) 형식의 로깅 설정 |
 | `logfire` | [Logfire](https://logfire.pydantic.dev/) 원격 로깅 설정 (기본 `enabled: false`) |
+
+아카라이브가 Cloudflare 챌린지로 403을 반환하는 환경에서는 실험용 Scrapling 크롤러를 사용할 수 있습니다.
+
+```yaml
+crawlers:
+  arcalive_hotdeal:
+    enabled: false
+  arcalive_hotdeal_v2:
+    url_list:
+    - https://arca.live/b/hotdeal
+    crawler_name: ArcaLiveCrawlerV2
+    enabled: true
+    # 필요 시 같은 실행 환경에서 얻은 쿠키 또는 프록시를 추가
+    # cookie_env: ARCALIVE_COOKIE
+    # proxy: http://127.0.0.1:8080
+```
+
+Docker에서는 브라우저 의존성이 포함된 이미지를 빌드해야 합니다.
+
+```bash
+docker build -t user-hotdeal-bot:crawler-scrapling --target crawler-scrapling .
+```
 
 ### 주요 환경 변수
 
@@ -255,7 +317,7 @@ uv run ruff format # 포맷
 | --- | --- |
 | 언어 | Python 3.11+ |
 | 패키지 관리 | uv |
-| 크롤링 | aiohttp, BeautifulSoup4 |
+| 크롤링 | aiohttp, BeautifulSoup4, Scrapling |
 | 메신저 | python-telegram-bot 21+ |
 | API | FastAPI, Uvicorn, feedgen |
 | DB | SQLAlchemy 2.0(async), Alembic, SQLite / MySQL |

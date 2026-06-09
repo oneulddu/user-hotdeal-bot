@@ -33,6 +33,12 @@ FROM base AS crawler
 CMD ["python", "-m", "src.main"]
 
 
+# crawler target with Scrapling browser dependencies installed
+FROM crawler AS crawler-scrapling
+
+RUN scrapling install
+
+
 # api target: runs the FastAPI server
 FROM base AS api
 

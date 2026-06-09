@@ -59,6 +59,15 @@ crawlers:
     # cookie_env: ARCALIVE_COOKIE
     # headers:
     #   Referer: https://arca.live/b/hotdeal
+  arcalive_hotdeal_v2:
+    url_list:
+    - https://arca.live/b/hotdeal
+    crawler_name: ArcaLiveCrawlerV2
+    description: 아카라이브 핫딜 게시판 (Scrapling)
+    enabled: false
+    # Cloudflare 챌린지 대응 실험용. 사용 시 arcalive_hotdeal을 끄고 이 항목을 켜세요.
+    # cookie_env: ARCALIVE_COOKIE
+    # proxy: http://127.0.0.1:8080
 # 봇 설정 (메시지 전송)
 bots:
   telegram:

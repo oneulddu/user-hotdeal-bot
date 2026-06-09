@@ -138,6 +138,7 @@ config.yaml
 dump.json
 log/
 error/
+data/scrapling-arcalive/
 
 # claude
 *.local.json
