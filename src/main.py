@@ -357,6 +357,7 @@ class BotManager:
                 # 설정이 달라진 경우 새로 생성
                 else:
                     self.logger.info("Config changed: %s", crawler_name)
+                    await _cwr.close()
             crawler_cls_name = crawler_config["crawler_name"]
             crawler_cls = getattr(crawler, crawler_cls_name, None)
             if crawler_cls is None:
@@ -380,8 +381,8 @@ class BotManager:
             self.logger.info("Crawler initialized: %s (%s)", crawler_name, crawler_cls_name)
         # 남은 크롤러 객체 목록 출력 (삭제될 크롤러)
         for k, v in _crawlers_old.items():
-            # GC가 알아서 할테니 별도 처리는 X (세션은 다 같이 쓰고 있기 떄문에 닫으면 안됨)
             self.logger.info("Crawler removed or disabled: %s (%s)", k, v.cls_name)
+            await v.close()
         self.logger.info("%d crawler(s) initialized", len(self.crawlers))
 
     async def init_bots(self, bots: dict[str, BotConfig]):

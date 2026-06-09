@@ -82,6 +82,7 @@ class BaseCrawler(metaclass=ABCMeta):
         cookie: str | None = None,
         cookie_env: str | None = None,
     ) -> None:
+        self._owns_session = session is None
         self.session: aiohttp.ClientSession = session if session is not None else aiohttp.ClientSession(trust_env=True)
         self.url_list: list[str] = url_list
         self.cls_name = self.__class__.__name__
@@ -244,7 +245,7 @@ class BaseCrawler(metaclass=ABCMeta):
 
     async def close(self):
         """세션 종료"""
-        if not self.session.closed:
+        if self._owns_session and not self.session.closed:
             await self.session.close()
 
     async def dump_http_response(self, resp: aiohttp.ClientResponse) -> None:
