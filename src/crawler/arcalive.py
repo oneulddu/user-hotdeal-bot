@@ -291,6 +291,13 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
             return None
         return {"http": self.proxy, "https": self.proxy}
 
+    def _curl_verify(self) -> bool | str:
+        if not self.ssl_verify:
+            return False
+        if self.ssl_ca_cert:
+            return self.ssl_ca_cert
+        return True
+
     async def request(self, url: str) -> str | None:
         self.logger.debug("Send curl_cffi request to %s", url)
         try:
@@ -298,6 +305,7 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
                 impersonate=os.getenv("ARCALIVE_CURL_IMPERSONATE", self.CURL_IMPERSONATE),
                 proxies=self._curl_proxies(),
                 timeout=self._env_int("ARCALIVE_CURL_TIMEOUT", 30),
+                verify=self._curl_verify(),
             ) as session:
                 response = await session.get(
                     url,

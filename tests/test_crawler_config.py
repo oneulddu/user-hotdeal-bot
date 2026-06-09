@@ -2,6 +2,7 @@ import aiohttp
 import pytest
 
 from src import crawler
+from src.crawler import base_crawler
 
 
 class FakeScraplingResponse:
@@ -161,6 +162,7 @@ async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
         "https": "http://127.0.0.1:8080",
     }
     assert session.kwargs["timeout"] == 12
+    assert session.kwargs["verify"] is True
     assert session.get_url == "https://arca.live/b/hotdeal"
     assert session.get_kwargs["headers"] == {
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
@@ -168,3 +170,36 @@ async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
     }
     assert session.get_kwargs["cookies"] == {"foo": "bar"}
     assert session.get_kwargs["allow_redirects"] is False
+    await crawler_instance.close()
+
+
+@pytest.mark.asyncio
+async def test_arcalive_v15_honors_ssl_options(monkeypatch):
+    created_sessions = []
+
+    class RecordingCurlSession(FakeCurlSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            created_sessions.append(self)
+
+    monkeypatch.setattr(crawler.arcalive, "CurlAsyncSession", RecordingCurlSession)
+    monkeypatch.setattr(base_crawler.ssl, "create_default_context", lambda cafile: object())
+
+    no_verify_crawler = crawler.ArcaLiveCrawlerV15(
+        "arcalive_hotdeal_v15",
+        ["https://arca.live/b/hotdeal"],
+        ssl_verify=False,
+    )
+    ca_crawler = crawler.ArcaLiveCrawlerV15(
+        "arcalive_hotdeal_v15",
+        ["https://arca.live/b/hotdeal"],
+        ssl_ca_cert="/path/to/ca-bundle.crt",
+    )
+
+    await no_verify_crawler.request("https://arca.live/b/hotdeal")
+    await ca_crawler.request("https://arca.live/b/hotdeal")
+
+    assert created_sessions[0].kwargs["verify"] is False
+    assert created_sessions[1].kwargs["verify"] == "/path/to/ca-bundle.crt"
+    await no_verify_crawler.close()
+    await ca_crawler.close()
