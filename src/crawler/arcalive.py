@@ -3,12 +3,50 @@
 # API 문서화되면 전환 예정
 import re
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from .base_crawler import BaseArticle, BaseCrawler
 
 
 class ArcaLiveCrawler(BaseCrawler):
+    DEFAULT_REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    }
+
+    def __init__(
+        self,
+        name: str,
+        url_list: list[str],
+        session: aiohttp.ClientSession | None = None,
+        proxy: str | None = None,
+        ssl_verify: bool = True,
+        ssl_ca_cert: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        cookie: str | None = None,
+        cookie_env: str | None = None,
+    ) -> None:
+        headers = {**self.DEFAULT_REQUEST_HEADERS, **(request_headers or {})}
+        if url_list and "Referer" not in headers:
+            headers["Referer"] = url_list[0]
+
+        super().__init__(
+            name,
+            url_list,
+            session=session,
+            proxy=proxy,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
+            request_headers=headers,
+            cookie=cookie,
+            cookie_env=cookie_env,
+        )
+        self.config_request_headers = request_headers or {}
+
     async def parsing(self, html: str) -> dict[int, BaseArticle]:
         soup = BeautifulSoup(html, "html.parser")
 

@@ -4,6 +4,7 @@ import logging
 import os
 import ssl
 from abc import ABCMeta, abstractmethod
+from http.cookies import SimpleCookie
 from typing import Any, Self, TypedDict
 
 import aiohttp
@@ -77,6 +78,9 @@ class BaseCrawler(metaclass=ABCMeta):
         proxy: str | None = None,
         ssl_verify: bool = True,
         ssl_ca_cert: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        cookie: str | None = None,
+        cookie_env: str | None = None,
     ) -> None:
         self.session: aiohttp.ClientSession = session if session is not None else aiohttp.ClientSession(trust_env=True)
         self.url_list: list[str] = url_list
@@ -85,6 +89,12 @@ class BaseCrawler(metaclass=ABCMeta):
         self.proxy = proxy
         self.ssl_verify = ssl_verify
         self.ssl_ca_cert = ssl_ca_cert
+        self.config_request_headers = request_headers or {}
+        self.config_cookie = cookie
+        self.request_headers = request_headers or {}
+        self.cookie_env = cookie_env
+        self.cookie = self.resolve_cookie(cookie, cookie_env)
+        self.request_cookies = self._parse_cookie_header(self.cookie)
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
         self._prev_status = 200
 
@@ -97,6 +107,23 @@ class BaseCrawler(metaclass=ABCMeta):
             # 커스텀 CA 인증서 사용
             self._ssl_context = ssl.create_default_context(cafile=ssl_ca_cert)
         # ssl_verify=True이고 ssl_ca_cert=None이면 기본 시스템 CA 사용 (None)
+
+    @staticmethod
+    def resolve_cookie(cookie: str | None, cookie_env: str | None) -> str:
+        if cookie is not None:
+            return cookie
+        if cookie_env:
+            return os.getenv(cookie_env, "")
+        return ""
+
+    @staticmethod
+    def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
+        if not cookie_header.strip():
+            return {}
+
+        cookie = SimpleCookie()
+        cookie.load(cookie_header)
+        return {key: morsel.value for key, morsel in cookie.items()}
 
     async def get(self) -> ArticleCollection:
         """게시글 데이터를 크롤링 및 파싱하여 ArticleCollection 객체로 반환
@@ -141,6 +168,10 @@ class BaseCrawler(metaclass=ABCMeta):
             request_kwargs["proxy"] = self.proxy
         if self._ssl_context is not None:
             request_kwargs["ssl"] = self._ssl_context
+        if self.request_headers:
+            request_kwargs["headers"] = self.request_headers
+        if self.request_cookies:
+            request_kwargs["cookies"] = self.request_cookies
         try:
             resp = await self.session.get(url, **request_kwargs)
         except aiohttp.ServerTimeoutError as e:

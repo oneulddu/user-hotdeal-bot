@@ -14,8 +14,21 @@ class DummyCrawler(BaseCrawler):
         proxy: str | None = None,
         ssl_verify: bool = True,
         ssl_ca_cert: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        cookie: str | None = None,
+        cookie_env: str | None = None,
     ) -> None:
-        super().__init__(name, url_list, session, proxy=proxy, ssl_verify=ssl_verify, ssl_ca_cert=ssl_ca_cert)
+        super().__init__(
+            name,
+            url_list,
+            session,
+            proxy=proxy,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
+            request_headers=request_headers,
+            cookie=cookie,
+            cookie_env=cookie_env,
+        )
         self.start = 1
         self.dummy_data = {i: self._generate_article_object(i) for i in range(self.start, self.start + 10)}
 

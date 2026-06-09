@@ -55,6 +55,10 @@ crawlers:
     crawler_name: ArcaLiveCrawler
     description: 아카라이브 핫딜 게시판
     enabled: true
+    # Safari/브라우저에서 이미 접근 가능한 계정 쿠키를 환경변수로 넘길 때 사용
+    # cookie_env: ARCALIVE_COOKIE
+    # headers:
+    #   Referer: https://arca.live/b/hotdeal
 # 봇 설정 (메시지 전송)
 bots:
   telegram:
