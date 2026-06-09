@@ -1,4 +1,4 @@
-from .arcalive import ArcaLiveCrawler, ArcaLiveCrawlerV2
+from .arcalive import ArcaLiveCrawler, ArcaLiveCrawlerV2, ArcaLiveCrawlerV15
 from .base_crawler import ArticleCollection, BaseArticle, BaseCrawler
 from .clien import ClienCrawler
 from .coolenjoy import CoolenjoyCrawler, CoolenjoyRSSCrawler
@@ -24,6 +24,7 @@ __all__ = [
     "DamoangCrawler",
     "RuliwebCrawler",
     "ArcaLiveCrawler",
+    "ArcaLiveCrawlerV15",
     "ArcaLiveCrawlerV2",
     "ZodCrawler",
     "QuasarzoneCrawler",

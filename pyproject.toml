@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "alembic>=1.14.0",
     "beautifulsoup4>=4.12.3",
+    "curl-cffi>=0.15.0",
     "fastapi>=0.115.0",
     "feedgen>=1.0.0",
     "logfire[aiohttp]>=0.30.0",

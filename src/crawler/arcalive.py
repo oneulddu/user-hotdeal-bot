@@ -7,6 +7,7 @@ import re
 
 import aiohttp
 from bs4 import BeautifulSoup
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from scrapling.fetchers import AsyncStealthySession
 
 from .base_crawler import BaseArticle, BaseCrawler
@@ -265,3 +266,67 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             await self._scrapling_session.close()
             self._scrapling_session_started = False
         await super().close()
+
+
+class ArcaLiveCrawlerV15(ArcaLiveCrawler):
+    """curl_cffi-based ArcaLive crawler with Chrome TLS impersonation."""
+
+    CURL_IMPERSONATE = "chrome124"
+
+    def _curl_headers(self) -> dict[str, str]:
+        return {key: value for key, value in self.request_headers.items() if key.lower() != "user-agent"}
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    def _curl_proxies(self) -> dict[str, str] | None:
+        if not self.proxy:
+            return None
+        return {"http": self.proxy, "https": self.proxy}
+
+    async def request(self, url: str) -> str | None:
+        self.logger.debug("Send curl_cffi request to %s", url)
+        try:
+            async with CurlAsyncSession(
+                impersonate=os.getenv("ARCALIVE_CURL_IMPERSONATE", self.CURL_IMPERSONATE),
+                proxies=self._curl_proxies(),
+                timeout=self._env_int("ARCALIVE_CURL_TIMEOUT", 30),
+            ) as session:
+                response = await session.get(
+                    url,
+                    headers=self._curl_headers(),
+                    cookies=self.request_cookies or None,
+                    allow_redirects=False,
+                )
+        except Exception as e:
+            self.logger.error("curl_cffi request failed: %s (%s)", e, url)
+            return None
+
+        if response.status_code != 200:
+            if response.status_code != self._prev_status:
+                self.logger.error("curl_cffi response error: %s (%s)", response.status_code, url)
+                await self.dump_curl_response(response)
+            else:
+                self.logger.info("curl_cffi response error [skip]: %s (%s)", response.status_code, url)
+            self._prev_status = response.status_code
+            return None
+
+        self._prev_status = response.status_code
+        return response.text
+
+    async def dump_curl_response(self, response) -> None:
+        current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join("error", f"{current_datetime}_{self.name}.html")
+
+        if not os.path.exists("error"):
+            os.makedirs("error")
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(response.text)

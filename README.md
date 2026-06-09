@@ -39,7 +39,7 @@
 | [클리앙](https://www.clien.net/service/board/jirum) | 알뜰구매 | `ClienCrawler` |
 | [쿨앤조이](https://coolenjoy.net/bbs/jirum) | 지름/알뜰정보 | `CoolenjoyCrawler`, `CoolenjoyRSSCrawler` |
 | [퀘이사존](https://quasarzone.com/bbs/qb_saleinfo) | 지름/할인정보 | `QuasarzoneCrawler`, `QuasarzoneMobileCrawler` |
-| [아카라이브](https://arca.live/b/hotdeal) | 핫딜 채널 | `ArcaLiveCrawler` |
+| [아카라이브](https://arca.live/b/hotdeal) | 핫딜 채널 | `ArcaLiveCrawler`, `ArcaLiveCrawlerV15`, `ArcaLiveCrawlerV2` |
 | [다모앙](https://damoang.net/economy) | 알뜰구매 | `DamoangCrawler` |
 | [에펨코리아](https://www.fmkorea.com/hotdeal) | 핫딜 | `FmkoreaCrawler` |
 | [zod](https://zod.kr/deal) | 특가 | `ZodCrawler` |
@@ -157,17 +157,24 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 | `logging` | [`logging.config.dictConfig`](https://docs.python.org/ko/3/howto/logging-cookbook.html#customizing-handlers-with-dictconfig) 형식의 로깅 설정 |
 | `logfire` | [Logfire](https://logfire.pydantic.dev/) 원격 로깅 설정 (기본 `enabled: false`) |
 
-아카라이브가 Cloudflare 챌린지로 403을 반환하는 환경에서는 실험용 Scrapling 크롤러를 사용할 수 있습니다.
+아카라이브가 Cloudflare 챌린지로 403을 반환하는 환경에서는 V1.5 또는 실험용 Scrapling 크롤러를 사용할 수 있습니다. V1.5는 `curl_cffi`로 Chrome TLS fingerprint를 흉내내며, 브라우저를 띄우는 V2보다 가볍습니다.
 
 ```yaml
 crawlers:
   arcalive_hotdeal:
     enabled: false
+  arcalive_hotdeal_v15:
+    url_list:
+    - https://arca.live/b/hotdeal
+    crawler_name: ArcaLiveCrawlerV15
+    enabled: true
+    # 필요 시 프록시를 추가
+    # proxy: http://127.0.0.1:8080
   arcalive_hotdeal_v2:
     url_list:
     - https://arca.live/b/hotdeal
     crawler_name: ArcaLiveCrawlerV2
-    enabled: true
+    enabled: false
     # 필요 시 같은 실행 환경에서 얻은 쿠키 또는 프록시를 추가
     # cookie_env: ARCALIVE_COOKIE
     # proxy: http://127.0.0.1:8080
@@ -317,7 +324,7 @@ uv run ruff format # 포맷
 | --- | --- |
 | 언어 | Python 3.11+ |
 | 패키지 관리 | uv |
-| 크롤링 | aiohttp, BeautifulSoup4, Scrapling |
+| 크롤링 | aiohttp, BeautifulSoup4, curl_cffi, Scrapling |
 | 메신저 | python-telegram-bot 21+ |
 | API | FastAPI, Uvicorn, feedgen |
 | DB | SQLAlchemy 2.0(async), Alembic, SQLite / MySQL |

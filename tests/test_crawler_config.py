@@ -28,6 +28,29 @@ class FakeScraplingSession:
         self.closed = True
 
 
+class FakeCurlResponse:
+    status_code = 200
+    text = "<html><body>ok</body></html>"
+
+
+class FakeCurlSession:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.get_url = None
+        self.get_kwargs = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get(self, url, **kwargs):
+        self.get_url = url
+        self.get_kwargs = kwargs
+        return FakeCurlResponse()
+
+
 @pytest.mark.asyncio
 async def test_dummy_crawler_accepts_base_crawler_options():
     async with aiohttp.ClientSession() as session:
@@ -106,3 +129,42 @@ async def test_arcalive_v2_builds_stealth_session_with_persistent_profile(monkey
     assert created_kwargs["cookies"] == [{"name": "foo", "value": "bar", "url": "https://arca.live/b/hotdeal"}]
     assert crawler_instance._scrapling_session.fetch_kwargs["timeout"] == 1234
     assert crawler_instance._scrapling_session.fetch_kwargs["wait"] == 567
+
+
+@pytest.mark.asyncio
+async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
+    created_sessions = []
+
+    class RecordingCurlSession(FakeCurlSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            created_sessions.append(self)
+
+    monkeypatch.setattr(crawler.arcalive, "CurlAsyncSession", RecordingCurlSession)
+    monkeypatch.setenv("ARCALIVE_CURL_TIMEOUT", "12")
+
+    crawler_instance = crawler.ArcaLiveCrawlerV15(
+        "arcalive_hotdeal_v15",
+        ["https://arca.live/b/hotdeal"],
+        request_headers={"Referer": "https://arca.live/b/hotdeal", "User-Agent": "Custom UA"},
+        cookie="foo=bar",
+        proxy="http://127.0.0.1:8080",
+    )
+
+    html = await crawler_instance.request("https://arca.live/b/hotdeal")
+
+    assert html == FakeCurlResponse.text
+    session = created_sessions[0]
+    assert session.kwargs["impersonate"] == "chrome124"
+    assert session.kwargs["proxies"] == {
+        "http": "http://127.0.0.1:8080",
+        "https": "http://127.0.0.1:8080",
+    }
+    assert session.kwargs["timeout"] == 12
+    assert session.get_url == "https://arca.live/b/hotdeal"
+    assert session.get_kwargs["headers"] == {
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        "Referer": "https://arca.live/b/hotdeal",
+    }
+    assert session.get_kwargs["cookies"] == {"foo": "bar"}
+    assert session.get_kwargs["allow_redirects"] is False
