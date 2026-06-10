@@ -42,6 +42,36 @@ async def test_query_api_key_auth_works_when_guest_access_is_disabled():
 
 
 @pytest.mark.asyncio
+async def test_api_key_auth_updates_last_used_without_second_key_lookup(monkeypatch):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    lookup_count = 0
+    original_get_by_key = ApiKeyRepository.get_by_key
+
+    async def counted_get_by_key(self, key):
+        nonlocal lookup_count
+        lookup_count += 1
+        return await original_get_by_key(self, key)
+
+    monkeypatch.setattr(ApiKeyRepository, "get_by_key", counted_get_by_key)
+
+    async with get_async_session(engine) as session:
+        await ApiKeyRepository(session).create("valid-key", "test-client")
+        await SettingsRepository(session).set(Settings.GUEST_ACCESS_ENABLED, "false")
+
+        auth_result = await verify_api_key_or_guest(
+            request=make_request(),
+            session=session,
+            api_key="valid-key",
+        )
+
+    await engine.dispose()
+
+    assert auth_result == "valid-key"
+    assert lookup_count == 1
+
+
+@pytest.mark.asyncio
 async def test_guest_rate_limit_increment_survives_route_error():
     engine = get_async_engine("sqlite+aiosqlite:///:memory:")
     await init_db(engine)

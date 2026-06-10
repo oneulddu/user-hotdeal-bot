@@ -87,3 +87,52 @@ async def test_bulk_upsert_runs_single_insert_statement():
     assert count == 3
     assert article_ids == {1, 2, 3}
     assert len(insert_statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_restores_soft_deleted_article():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        repo = ArticleRepository(session)
+        article = await repo.create(make_article(1))
+        await repo.soft_delete(article.id)
+        await repo.bulk_upsert([{**make_article(1), "title": "Restored"}])
+
+    async with get_async_session(engine) as session:
+        repo = ArticleRepository(session)
+        restored = await repo.get_by_crawler_and_article_id("dummy", 1)
+
+    await engine.dispose()
+
+    assert restored is not None
+    assert restored.deleted_at is None
+    assert restored.title == "Restored"
+
+
+@pytest.mark.asyncio
+async def test_bulk_soft_delete_updates_only_active_articles():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        repo = ArticleRepository(session)
+        first = await repo.create(make_article(1))
+        second = await repo.create(make_article(2))
+        await repo.soft_delete(second.id)
+
+        deleted_count = await repo.bulk_soft_delete([("dummy", 1), ("dummy", 2), ("missing", 3)])
+        active_articles, active_total = await repo.list_articles(limit=10)
+        deleted_first = await repo.get_by_id(first.id)
+        deleted_second = await repo.get_by_id(second.id)
+
+    await engine.dispose()
+
+    assert deleted_count == 1
+    assert active_articles == []
+    assert active_total == 0
+    assert deleted_first is not None
+    assert deleted_first.deleted_at is not None
+    assert deleted_second is not None
+    assert deleted_second.deleted_at is not None

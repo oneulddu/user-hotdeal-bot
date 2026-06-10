@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 
 def utc_now() -> datetime:
-    """Return the current time as a timezone-aware UTC datetime."""
-    return datetime.now(timezone.utc)
+    """Return the current time as a naive UTC datetime for DB storage."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def as_utc(dt: datetime) -> datetime:

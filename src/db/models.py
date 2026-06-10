@@ -41,9 +41,9 @@ class Article(Base):
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # 타임스탬프
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # 복합 유니크 제약 및 인덱스
     __table_args__ = (
@@ -67,8 +67,8 @@ class ApiKey(Base):
     name: Mapped[str] = mapped_column(String(100))  # 사용자/서비스 식별
     rate_limit_per_minute: Mapped[int] = mapped_column(default=60)
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def __repr__(self) -> str:
         return f"<ApiKey(id={self.id}, name={self.name}, active={self.is_active})>"
@@ -81,7 +81,7 @@ class GuestRateLimit(Base):
 
     ip_address: Mapped[str] = mapped_column(String(45), primary_key=True)  # IPv6 max length
     request_count: Mapped[int] = mapped_column(default=0)
-    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    window_start: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     def __repr__(self) -> str:
         return f"<GuestRateLimit(ip={self.ip_address}, count={self.request_count})>"
@@ -94,7 +94,7 @@ class ApiKeyRateLimit(Base):
 
     api_key_id: Mapped[int] = mapped_column(primary_key=True)
     request_count: Mapped[int] = mapped_column(default=0)
-    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    window_start: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     def __repr__(self) -> str:
         return f"<ApiKeyRateLimit(api_key_id={self.api_key_id}, count={self.request_count})>"
@@ -108,7 +108,7 @@ class Settings(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(String(1000))
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
     # 기본 설정값 상수
     GUEST_RATE_LIMIT_PER_MINUTE = "guest_rate_limit_per_minute"

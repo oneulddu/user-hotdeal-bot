@@ -5,7 +5,6 @@ import logging.config
 import os
 import signal
 import sys
-import tempfile
 import time
 from typing import Any, NotRequired, TypedDict
 
@@ -267,18 +266,9 @@ class PersistenceManager:
             "crawler": article_cache,
             "bot": {bot_name: await bot_obj.to_dict() for bot_name, bot_obj in bots.items()},
         }
-        dump_dir = os.path.dirname(os.path.abspath(dump_file_path))
-        tmp_file_path = ""
+        tmp_file_path = f"{dump_file_path}.tmp"
         try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=dump_dir,
-                prefix=f".{os.path.basename(dump_file_path)}.",
-                suffix=".tmp",
-                delete=False,
-            ) as f:
-                tmp_file_path = f.name
+            with open(tmp_file_path, "w", encoding="utf-8") as f:
                 json.dump(dump, f, ensure_ascii=False, indent=2, default=bot.message_serializer)
                 f.flush()
                 os.fsync(f.fileno())
@@ -624,15 +614,11 @@ class BotManager:
                     )
                     self.logger.debug("DB upsert: %d article(s)", count)
 
-                # 삭제된 게시글 soft delete
-                for article in result["remove"]:
-                    await repo.soft_delete_by_crawler(
-                        crawler_name=article["crawler_name"],
-                        article_id=article["article_id"],
-                    )
-
                 if result["remove"]:
-                    self.logger.debug("DB soft delete: %d article(s)", len(result["remove"]))
+                    deleted_count = await repo.bulk_soft_delete(
+                        [(article["crawler_name"], article["article_id"]) for article in result["remove"]]
+                    )
+                    self.logger.debug("DB soft delete: %d article(s)", deleted_count)
 
             self._db_backfilled_article_keys.update(saved_article_keys)
 

@@ -73,7 +73,23 @@ async def test_dump_data_replaces_file_atomically_without_temp_leftovers(tmp_pat
 
     data = json.loads(dump_file.read_text(encoding="utf-8"))
     assert data["crawler"]["dummy"]["1"]["title"] == "Article 1"
-    assert list(tmp_path.glob(".dump.json.*.tmp")) == []
+    assert not dump_file.with_suffix(".json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_dump_data_keeps_existing_file_when_serialization_fails(tmp_path):
+    dump_file = tmp_path / "dump.json"
+    dump_file.write_text("old data", encoding="utf-8")
+
+    class BrokenBot:
+        async def to_dict(self):
+            return {"bad": object()}
+
+    with pytest.raises(TypeError):
+        await PersistenceManager().dump_data({}, {"broken": BrokenBot()}, str(dump_file))
+
+    assert dump_file.read_text(encoding="utf-8") == "old data"
+    assert not dump_file.with_suffix(".json.tmp").exists()
 
 
 @pytest.mark.asyncio
@@ -162,7 +178,9 @@ async def test_init_crawlers_closes_replaced_and_removed_crawlers(monkeypatch):
         await manager.init_crawlers(crawler_config)
         first_crawler = manager.crawlers["tracked"]
 
-        await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "proxy": "http://proxy"}})
+        await manager.init_crawlers(
+            {**crawler_config, "tracked": {**crawler_config["tracked"], "proxy": "http://proxy"}}
+        )
         second_crawler = manager.crawlers["tracked"]
 
         await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "enabled": False}})

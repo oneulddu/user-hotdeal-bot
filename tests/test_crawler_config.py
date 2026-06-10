@@ -1,3 +1,6 @@
+import asyncio
+import os
+
 import aiohttp
 import pytest
 
@@ -52,6 +55,43 @@ class FakeCurlSession:
         return FakeCurlResponse()
 
 
+class ConcurrentCrawler(crawler.BaseCrawler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started_urls = []
+        self.second_started = asyncio.Event()
+
+    async def request(self, url: str) -> str | None:
+        self.started_urls.append(url)
+        if len(self.started_urls) == 1:
+            await self.second_started.wait()
+        else:
+            self.second_started.set()
+        return url
+
+    async def parsing(self, html: str) -> dict[int, crawler.BaseArticle]:
+        article_id = int(html.rsplit("/", 1)[-1])
+        return {
+            article_id: crawler.BaseArticle(
+                article_id=article_id,
+                title=f"Article {article_id}",
+                category="category",
+                site_name="site",
+                board_name="board",
+                writer_name="writer",
+                crawler_name=self.name,
+                url=html,
+                is_end=False,
+                extra={},
+            )
+        }
+
+
+class FakeDumpResponse:
+    async def read(self) -> bytes:
+        return b"<html>error</html>"
+
+
 @pytest.mark.asyncio
 async def test_dummy_crawler_accepts_base_crawler_options():
     async with aiohttp.ClientSession() as session:
@@ -69,6 +109,39 @@ async def test_dummy_crawler_accepts_base_crawler_options():
         assert crawler_instance.ssl_verify is False
         assert crawler_instance.request_headers == {"Referer": "https://example.com"}
         assert crawler_instance.request_cookies == {"foo": "bar", "baz": "qux"}
+
+
+@pytest.mark.asyncio
+async def test_base_crawler_fetches_multiple_urls_concurrently():
+    async with aiohttp.ClientSession() as session:
+        crawler_instance = ConcurrentCrawler(
+            "concurrent",
+            ["https://example.com/1", "https://example.com/2"],
+            session=session,
+        )
+
+        data = await asyncio.wait_for(crawler_instance.get(), timeout=0.2)
+
+    assert set(data) == {1, 2}
+    assert crawler_instance.started_urls == ["https://example.com/1", "https://example.com/2"]
+
+
+@pytest.mark.asyncio
+async def test_dump_http_response_keeps_only_recent_error_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    error_dir = tmp_path / "error"
+    error_dir.mkdir()
+    for i in range(51):
+        (error_dir / f"20000101_0000{i:02d}_dummy.html").write_text("old", encoding="utf-8")
+
+    async with aiohttp.ClientSession() as session:
+        crawler_instance = crawler.DummyCrawler("dummy", ["https://example.com"], session=session)
+        await crawler_instance.dump_http_response(FakeDumpResponse())
+
+    dumps = sorted(os.listdir(error_dir))
+    assert len(dumps) == 50
+    assert "20000101_000000_dummy.html" not in dumps
+    assert "20000101_000001_dummy.html" not in dumps
 
 
 @pytest.mark.asyncio

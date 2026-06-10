@@ -10,6 +10,8 @@ from typing import Any, Self, TypedDict
 import aiohttp
 import logfire
 
+MAX_ERROR_DUMPS = 50
+
 
 class CrawlerException(Exception):
     pass
@@ -135,10 +137,17 @@ class BaseCrawler(metaclass=ABCMeta):
         with logfire.span(
             f"crawler_get_{self.name}", crawler_name=self.__class__.__name__, url_count=len(self.url_list)
         ):
+            responses = await asyncio.gather(
+                *(self.request(url) for url in self.url_list),
+                return_exceptions=True,
+            )
             html_list: list[str] = []
-            for url in self.url_list:
-                if html := await self.request(url):
-                    html_list.append(html)
+            for url, result in zip(self.url_list, responses):
+                if isinstance(result, Exception):
+                    self.logger.error("Request failed: %s (%s)", result, url)
+                    continue
+                if result:
+                    html_list.append(result)
 
             data = ArticleCollection()
             for html in html_list:
@@ -263,3 +272,11 @@ class BaseCrawler(metaclass=ABCMeta):
         with open(filename, "wb") as f:
             f.write(await resp.read())
             self.logger.debug("Dumped response binary to %s", filename)
+
+        dumps = sorted(
+            os.path.join("error", name)
+            for name in os.listdir("error")
+            if name.endswith(".html") and os.path.isfile(os.path.join("error", name))
+        )
+        for old_dump in dumps[:-MAX_ERROR_DUMPS]:
+            os.unlink(old_dump)

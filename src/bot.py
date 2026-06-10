@@ -103,16 +103,10 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
             self.logger.debug("Removed expired message object (%s/%s)", crawler_name, article_id)
 
     async def consumer(self):
-        """메시지 전송 작업을 처리하는 코루틴. 큐에 아이템이 들어오면 해당 아이템을 처리.
-        별도의 작업이 없을 때는 1초마다 큐에 아이템이 있는지 확인.
-        """
+        """메시지 전송 작업을 처리하는 코루틴. 큐에 아이템이 들어오면 해당 아이템을 처리."""
         item = None
         try:
             while self.is_running:
-                if self.queue.empty():
-                    # self.logger.debug("Consumer task waiting for item")
-                    await asyncio.sleep(1)
-                    continue
                 item = await self.queue.get()
                 self.logger.debug(
                     "Consumer task got item: <%s.%s> %s", item[1]["crawler_name"], item[0], item[1]["title"]
@@ -145,13 +139,16 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
         self.is_running = False
         if self.consumer_task is None:
             return
-        if self.consumer_task.done():
+        task = self.consumer_task
+        if task.done():
             return
+        task.cancel()
         try:
-            await asyncio.wait_for(self.consumer_task, timeout=5)
-        except asyncio.TimeoutError:
+            await asyncio.wait_for(task, timeout=5)
+        except asyncio.CancelledError:
+            pass
+        except TimeoutError:
             self.logger.warning("Consumer task is not finished in 5 secs")
-            self.consumer_task.cancel()
 
     async def check_consumer(self, no_warning: bool = False):
         """Consumer 작업이 종료되었거나 종료된 상태인 경우 다시 시작"""

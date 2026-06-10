@@ -1,5 +1,7 @@
 """RSS Feed routes."""
 
+import time
+
 from fastapi import APIRouter, Query, Response
 from feedgen.feed import FeedGenerator
 
@@ -8,6 +10,33 @@ from src.datetime_utils import as_utc, utc_now
 from src.db import Article
 
 router = APIRouter(prefix="/feed", tags=["feed"])
+FEED_CACHE_TTL_SECONDS = 60
+FEED_CACHE_CONTROL = "public, max-age=60"
+_feed_cache: dict[tuple[str, str | None, str | None, int], tuple[float, bytes]] = {}
+
+
+def _get_cached_feed(cache_key: tuple[str, str | None, str | None, int]) -> bytes | None:
+    cached = _feed_cache.get(cache_key)
+    if cached is None:
+        return None
+
+    expires_at, content = cached
+    if expires_at <= time.monotonic():
+        _feed_cache.pop(cache_key, None)
+        return None
+    return content
+
+
+def _set_cached_feed(cache_key: tuple[str, str | None, str | None, int], content: bytes) -> None:
+    _feed_cache[cache_key] = (time.monotonic() + FEED_CACHE_TTL_SECONDS, content)
+
+
+def _feed_response(content: bytes, media_type: str) -> Response:
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": FEED_CACHE_CONTROL},
+    )
 
 
 def _create_feed_generator(title: str = "핫딜 모아보기") -> FeedGenerator:
@@ -18,7 +47,7 @@ def _create_feed_generator(title: str = "핫딜 모아보기") -> FeedGenerator:
     fg.description("한국 커뮤니티 핫딜 모아보기")
     fg.language("ko")
     fg.generator("user-hotdeal-bot")
-    fg.lastBuildDate(utc_now())
+    fg.lastBuildDate(as_utc(utc_now()))
     return fg
 
 
@@ -69,6 +98,10 @@ async def get_rss_feed(
     limit: int = Query(50, ge=1, le=100, description="Number of items in feed"),
 ) -> Response:
     """Get RSS 2.0 feed of hot deals."""
+    cache_key = ("rss", crawler, site, limit)
+    if cached_feed := _get_cached_feed(cache_key):
+        return _feed_response(cached_feed, "application/rss+xml; charset=utf-8")
+
     articles = await _list_feed_articles(repo, crawler, site, limit)
     fg = _create_feed_generator(_feed_title(crawler, site))
 
@@ -79,11 +112,9 @@ async def get_rss_feed(
 
     # Generate RSS XML
     rss_xml = fg.rss_str(pretty=True)
+    _set_cached_feed(cache_key, rss_xml)
 
-    return Response(
-        content=rss_xml,
-        media_type="application/rss+xml; charset=utf-8",
-    )
+    return _feed_response(rss_xml, "application/rss+xml; charset=utf-8")
 
 
 @router.get("/atom.xml", response_class=Response)
@@ -95,6 +126,10 @@ async def get_atom_feed(
     limit: int = Query(50, ge=1, le=100, description="Number of items in feed"),
 ) -> Response:
     """Get Atom feed of hot deals."""
+    cache_key = ("atom", crawler, site, limit)
+    if cached_feed := _get_cached_feed(cache_key):
+        return _feed_response(cached_feed, "application/atom+xml; charset=utf-8")
+
     articles = await _list_feed_articles(repo, crawler, site, limit)
     fg = _create_feed_generator(_feed_title(crawler, site))
     fg.id("https://t.me/hotdeal_kr")
@@ -106,8 +141,6 @@ async def get_atom_feed(
 
     # Generate Atom XML
     atom_xml = fg.atom_str(pretty=True)
+    _set_cached_feed(cache_key, atom_xml)
 
-    return Response(
-        content=atom_xml,
-        media_type="application/atom+xml; charset=utf-8",
-    )
+    return _feed_response(atom_xml, "application/atom+xml; charset=utf-8")
