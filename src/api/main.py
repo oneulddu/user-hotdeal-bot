@@ -25,7 +25,7 @@ from .routes import articles_router, crawlers_router, feed_router
 from .schemas import HealthResponse
 
 VERSION = __version__
-RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 3600
+RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 600
 RATE_LIMIT_CLEANUP_OLDER_THAN_MINUTES = 60
 logger = logging.getLogger(__name__)
 

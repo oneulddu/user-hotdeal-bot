@@ -178,7 +178,9 @@ async def test_init_crawlers_closes_replaced_and_removed_crawlers(monkeypatch):
         await manager.init_crawlers(crawler_config)
         first_crawler = manager.crawlers["tracked"]
 
-        await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "proxy": "http://proxy"}})
+        await manager.init_crawlers(
+            {**crawler_config, "tracked": {**crawler_config["tracked"], "proxy": "http://proxy"}}
+        )
         second_crawler = manager.crawlers["tracked"]
 
         await manager.init_crawlers({**crawler_config, "tracked": {**crawler_config["tracked"], "enabled": False}})
