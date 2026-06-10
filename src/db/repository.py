@@ -241,6 +241,32 @@ class ArticleRepository:
         await self.session.flush()
         return True
 
+    async def bulk_soft_delete(self, keys: list[tuple[str, int]]) -> int:
+        """Soft delete articles by crawler_name and article_id in batches."""
+        if not keys:
+            return 0
+
+        grouped: dict[str, list[int]] = {}
+        for crawler_name, article_id in keys:
+            grouped.setdefault(crawler_name, []).append(article_id)
+
+        deleted_at = utc_now()
+        deleted_count = 0
+        for crawler_name, article_ids in grouped.items():
+            result = await self.session.execute(
+                update(Article)
+                .where(
+                    Article.crawler_name == crawler_name,
+                    Article.article_id.in_(article_ids),
+                    Article.deleted_at.is_(None),
+                )
+                .values(deleted_at=deleted_at)
+            )
+            deleted_count += result.rowcount or 0
+
+        await self.session.flush()
+        return deleted_count
+
     async def get_distinct_crawlers(self) -> list[str]:
         """Get list of distinct crawler names.
 
@@ -300,16 +326,14 @@ class ApiKeyRepository:
         result = await self.session.execute(select(ApiKey).where(ApiKey.key == key, ApiKey.is_active.is_(True)))
         return result.scalar_one_or_none()
 
-    async def update_last_used(self, key: str) -> None:
+    async def update_last_used(self, api_key: ApiKey) -> None:
         """Update last_used_at for an API key.
 
         Args:
-            key: API key string
+            api_key: Already loaded API key instance
         """
-        api_key = await self.get_by_key(key)
-        if api_key:
-            api_key.last_used_at = utc_now()
-            await self.session.flush()
+        api_key.last_used_at = utc_now()
+        await self.session.flush()
 
     async def create(self, key: str, name: str, rate_limit_per_minute: int = 60) -> ApiKey:
         """Create a new API key.

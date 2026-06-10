@@ -614,15 +614,11 @@ class BotManager:
                     )
                     self.logger.debug("DB upsert: %d article(s)", count)
 
-                # 삭제된 게시글 soft delete
-                for article in result["remove"]:
-                    await repo.soft_delete_by_crawler(
-                        crawler_name=article["crawler_name"],
-                        article_id=article["article_id"],
-                    )
-
                 if result["remove"]:
-                    self.logger.debug("DB soft delete: %d article(s)", len(result["remove"]))
+                    deleted_count = await repo.bulk_soft_delete(
+                        [(article["crawler_name"], article["article_id"]) for article in result["remove"]]
+                    )
+                    self.logger.debug("DB soft delete: %d article(s)", deleted_count)
 
             self._db_backfilled_article_keys.update(saved_article_keys)
 
