@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src import crawler
-from src.api.routes.feed import _feed_cache, _fill_entry_common, get_rss_feed
+from src.api.routes.feed import FEED_CACHE_MAX_SIZE, _feed_cache, _fill_entry_common, _set_cached_feed, get_rss_feed
 from src.datetime_utils import as_utc
 from src.db import Article, ArticleRepository, get_async_engine, get_async_session, init_db
 
@@ -113,6 +113,17 @@ async def test_feed_cache_reuses_xml_for_same_parameters():
     assert repo.calls == 1
     assert first.body == second.body
     assert first.headers["Cache-Control"] == "public, max-age=60"
+
+
+def test_feed_cache_prunes_expired_entries_and_caps_size():
+    _feed_cache.clear()
+    _feed_cache.update({("rss", f"expired-{i}", None, 50): (0, b"expired") for i in range(3)})
+
+    for i in range(FEED_CACHE_MAX_SIZE + 1):
+        _set_cached_feed(("rss", f"crawler-{i}", None, 50), b"feed")
+
+    assert len(_feed_cache) <= FEED_CACHE_MAX_SIZE
+    assert all("expired" not in (cache_key[1] or "") for cache_key in _feed_cache)
 
 
 @pytest.mark.asyncio

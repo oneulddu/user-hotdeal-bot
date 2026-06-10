@@ -12,7 +12,18 @@ from src.db import Article
 router = APIRouter(prefix="/feed", tags=["feed"])
 FEED_CACHE_TTL_SECONDS = 60
 FEED_CACHE_CONTROL = "public, max-age=60"
+FEED_CACHE_MAX_SIZE = 128
 _feed_cache: dict[tuple[str, str | None, str | None, int], tuple[float, bytes]] = {}
+
+
+def _prune_feed_cache(now: float) -> None:
+    expired_keys = [cache_key for cache_key, (expires_at, _content) in _feed_cache.items() if expires_at <= now]
+    for cache_key in expired_keys:
+        _feed_cache.pop(cache_key, None)
+
+    while len(_feed_cache) >= FEED_CACHE_MAX_SIZE:
+        oldest_key = min(_feed_cache, key=lambda cache_key: _feed_cache[cache_key][0])
+        _feed_cache.pop(oldest_key, None)
 
 
 def _get_cached_feed(cache_key: tuple[str, str | None, str | None, int]) -> bytes | None:
@@ -28,7 +39,9 @@ def _get_cached_feed(cache_key: tuple[str, str | None, str | None, int]) -> byte
 
 
 def _set_cached_feed(cache_key: tuple[str, str | None, str | None, int], content: bytes) -> None:
-    _feed_cache[cache_key] = (time.monotonic() + FEED_CACHE_TTL_SECONDS, content)
+    now = time.monotonic()
+    _prune_feed_cache(now)
+    _feed_cache[cache_key] = (now + FEED_CACHE_TTL_SECONDS, content)
 
 
 def _feed_response(content: bytes, media_type: str) -> Response:

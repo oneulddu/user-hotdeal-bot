@@ -126,8 +126,20 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
             # 작업이 취소됐다면 남아있는 아이템을 큐에 다시 넣어준 다음 consumer task 종료.
             self.logger.info("Consumer task cancelled")
             if item is not None:
-                await self.queue.put(item)
+                self._requeue_front(item)
             return
+
+    def _requeue_front(self, item: tuple[Literal["send", "edit", "delete"], BaseArticle]) -> None:
+        pending_items = []
+        while True:
+            try:
+                pending_items.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        self.queue.put_nowait(item)
+        for pending_item in pending_items:
+            self.queue.put_nowait(pending_item)
 
     async def run_consumer(self):
         """Consumer 작업 생성해 시작"""
