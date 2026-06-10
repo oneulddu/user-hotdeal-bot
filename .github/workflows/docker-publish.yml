@@ -78,6 +78,7 @@ jobs:
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v3
+        continue-on-error: true
         if: github.event_name != 'pull_request' && github.actor == github.repository_owner
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/crawler
@@ -86,7 +87,6 @@ jobs:
 
   build-api:
     name: Build API Image
-    needs: build-crawler
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -142,6 +142,7 @@ jobs:
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v3
+        continue-on-error: true
         if: github.event_name != 'pull_request' && github.actor == github.repository_owner
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/api
@@ -150,7 +151,6 @@ jobs:
 
   build-backup:
     name: Build Backup Image
-    needs: build-api
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -202,6 +202,7 @@ jobs:
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v3
+        continue-on-error: true
         if: github.event_name != 'pull_request' && github.actor == github.repository_owner
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/backup
@@ -210,7 +211,6 @@ jobs:
 
   build-flaretunnel:
     name: Build FlareTunnel Image
-    needs: build-backup
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -262,6 +262,7 @@ jobs:
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v3
+        continue-on-error: true
         if: github.event_name != 'pull_request' && github.actor == github.repository_owner
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/flaretunnel
