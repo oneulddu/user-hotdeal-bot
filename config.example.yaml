@@ -59,6 +59,14 @@ crawlers:
     # cookie_env: ARCALIVE_COOKIE
     # headers:
     #   Referer: https://arca.live/b/hotdeal
+  arcalive_hotdeal_v15:
+    url_list:
+    - https://arca.live/b/hotdeal
+    crawler_name: ArcaLiveCrawlerV15
+    description: 아카라이브 핫딜 게시판 (curl_cffi V1.5)
+    enabled: false
+    # Chrome TLS fingerprint 흉내내기. 브라우저를 띄우지 않아 V2보다 가볍습니다.
+    # proxy: http://127.0.0.1:8080
   arcalive_hotdeal_v2:
     url_list:
     - https://arca.live/b/hotdeal
