@@ -110,6 +110,20 @@ async def test_consumer_requeues_in_flight_item_on_cancel():
     assert data["queue"][0][1]["article_id"] == 1
 
 
+@pytest.mark.asyncio
+async def test_consumer_requeues_in_flight_item_before_pending_items():
+    bot = RecordingBot()
+    article = make_article()
+
+    await bot.send(article)
+    await asyncio.wait_for(bot.started.wait(), timeout=0.2)
+    await bot.edit(article)
+
+    data = await bot.to_dict()
+
+    assert [item[0] for item in data["queue"]] == ["send", "edit"]
+
+
 async def _wait_until(predicate):
     while not predicate():
         await asyncio.sleep(0)
