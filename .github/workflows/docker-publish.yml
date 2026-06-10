@@ -82,6 +82,7 @@ jobs:
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/crawler
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   build-api:
     name: Build API Image
@@ -144,6 +145,7 @@ jobs:
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/api
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   build-backup:
     name: Build Backup Image
@@ -202,6 +204,7 @@ jobs:
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/backup
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   build-flaretunnel:
     name: Build FlareTunnel Image
@@ -260,3 +263,4 @@ jobs:
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/flaretunnel
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
