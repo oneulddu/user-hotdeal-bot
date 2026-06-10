@@ -86,6 +86,7 @@ jobs:
 
   build-api:
     name: Build API Image
+    needs: build-crawler
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -149,6 +150,7 @@ jobs:
 
   build-backup:
     name: Build Backup Image
+    needs: build-api
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -208,6 +210,7 @@ jobs:
 
   build-flaretunnel:
     name: Build FlareTunnel Image
+    needs: build-backup
     runs-on: ubuntu-latest
     permissions:
       contents: read
