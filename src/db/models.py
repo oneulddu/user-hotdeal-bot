@@ -6,7 +6,7 @@ from sqlalchemy import JSON, DateTime, Index, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from ulid import ULID
 
-from src.datetime_utils import utc_now
+from .time import utc_now
 
 
 def generate_ulid() -> str:

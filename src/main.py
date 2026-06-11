@@ -13,12 +13,12 @@ import logfire
 import yaml
 
 from src import (
+    __version__,
     bot,
     crawler,
     util,  # noqa: F401
 )
 from src.db import ArticleRepository, close_db, get_async_session, get_engine, get_timezone
-from src.version import __version__
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
@@ -569,6 +569,7 @@ class BotManager:
         )
         if crawling_time > 30:
             self.logger.warning("Crawling time took so long: %s", crawling_time)
+            logfire.warn("Slow crawling detected", duration=crawling_time, threshold=30)
 
         # Logfire 메트릭 로깅
         logfire.info(
@@ -579,9 +580,6 @@ class BotManager:
             remove_count=len(result["remove"]),
             total_articles=len(result["new"]) + len(result["update"]) + len(result["remove"]),
         )
-
-        if crawling_time > 30:
-            logfire.warn("Slow crawling detected", duration=crawling_time, threshold=30)
 
         return result
 
