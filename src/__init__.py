@@ -1,7 +1,8 @@
 """Top-level package metadata."""
 
 import tomllib
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 PACKAGE_NAME = "user-hotdeal-bot"
@@ -9,7 +10,7 @@ PACKAGE_NAME = "user-hotdeal-bot"
 
 def get_version() -> str:
     try:
-        return version(PACKAGE_NAME)
+        return metadata_version(PACKAGE_NAME)
     except PackageNotFoundError:
         pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
         with open(pyproject_path, "rb") as f:

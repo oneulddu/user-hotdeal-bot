@@ -25,12 +25,14 @@ class CloseTrackingCrawler(crawler.BaseCrawler):
 def test_version():
     from src.api.main import VERSION
     from src.main import __version__
+    from src.version import get_version
 
     with open("pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
     project_version = pyproject["project"]["version"]
     assert project_version == __version__
     assert project_version == VERSION
+    assert project_version == get_version()
 
 
 @pytest.mark.asyncio
