@@ -8,9 +8,8 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.datetime_utils import utc_now
-
 from .models import ApiKey, ApiKeyRateLimit, Article, GuestRateLimit, Settings
+from .time import utc_now
 
 
 def _is_mysql_session(session: AsyncSession) -> bool:

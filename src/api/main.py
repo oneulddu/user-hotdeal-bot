@@ -11,6 +11,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src import __version__
 from src.db import (
     ApiKeyRateLimitRepository,
     GuestRateLimitRepository,
@@ -19,7 +20,6 @@ from src.db import (
     get_engine,
     get_timezone,
 )
-from src.version import __version__
 
 from .routes import articles_router, crawlers_router, feed_router
 from .schemas import HealthResponse

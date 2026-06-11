@@ -242,5 +242,6 @@ async def close_db() -> None:
     """Close the global database engine."""
     global _engine
     if _engine is not None:
+        _session_maker_cache.pop(_engine, None)
         await _engine.dispose()
         _engine = None
