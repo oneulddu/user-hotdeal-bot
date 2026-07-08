@@ -204,7 +204,7 @@ class PersistenceManager:
                 continue
 
             await bots[bot_name].from_dict(bot_dump)
-            loaded_messages = sum(len(n) for n in bots[bot_name].cache)
+            loaded_messages = sum(len(messages) for messages in bots[bot_name].cache.values())
             self.logger.info("%s: %d message(s) loaded", bot_name, loaded_messages)
             loaded_queue = bots[bot_name].queue.qsize()
             self.logger.info("%s: %d message(s) queued", bot_name, loaded_queue)
@@ -524,7 +524,7 @@ class BotManager:
                 # crawling 메서드의 로깅과 중복돼서 주석 처리
                 # self.logger.debug("Title update detect: {title} ({url}) -> {new_title}".format(new_title=new_article["title"], **article))
                 result["update"].append(article)
-            elif article.get("extra") and article["extra"].get("price") != new_article.get("extra", {}).get("price"):
+            elif article.get("extra", {}).get("price") != new_article.get("extra", {}).get("price"):
                 result["update"].append(article)
             article.update(new_article)
 
@@ -731,7 +731,10 @@ class BotManager:
         for k, cwr in self.crawlers.items():
             self.logger.debug("crawler close: %s", k)
             if not cwr.session.closed:
-                await cwr.close()
+                try:
+                    await cwr.close()
+                except Exception as e:
+                    self.logger.warning("Crawler close failed: %s (%s)", k, e)
         if (session := getattr(self, "session", None)) is not None and not session.closed:
             await session.close()
         # 봇 세션 닫기
@@ -763,7 +766,7 @@ async def shutdown(sig: signal.Signals, bot: BotManager):
     # stop all tasks
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     [task.cancel() for task in tasks]
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
     loop.stop()
 
 

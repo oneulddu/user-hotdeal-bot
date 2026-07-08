@@ -97,7 +97,8 @@ async def verify_api_key_or_guest(
         return api_key_value
 
     # Guest access
-    guest_enabled = await settings_repo.get_bool(Settings.GUEST_ACCESS_ENABLED, default=True)
+    guest_settings = await settings_repo.get_many([Settings.GUEST_ACCESS_ENABLED, Settings.GUEST_RATE_LIMIT_PER_MINUTE])
+    guest_enabled = SettingsRepository.parse_bool(guest_settings.get(Settings.GUEST_ACCESS_ENABLED), default=True)
     if not guest_enabled:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -106,7 +107,9 @@ async def verify_api_key_or_guest(
 
     # Rate limit for guest
     client_ip = request.client.host if request.client else "unknown"
-    guest_rate_limit = await settings_repo.get_int(Settings.GUEST_RATE_LIMIT_PER_MINUTE, default=30)
+    guest_rate_limit = SettingsRepository.parse_int(
+        guest_settings.get(Settings.GUEST_RATE_LIMIT_PER_MINUTE), default=30
+    )
 
     within_limit = await guest_rate_limit_repo.check_and_increment(client_ip, guest_rate_limit)
     if not within_limit:

@@ -13,13 +13,6 @@ import logfire
 MAX_ERROR_DUMPS = 50
 
 
-class CrawlerException(Exception):
-    pass
-
-
-CrawlerExcpetion = CrawlerException
-
-
 class BaseArticle(TypedDict):
     article_id: int  # 게시글 번호
     title: str  # 게시글 제목

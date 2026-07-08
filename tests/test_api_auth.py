@@ -1,6 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import event, select
 from starlette.requests import Request
 
 from src.api.deps import verify_api_key_or_guest
@@ -114,3 +114,48 @@ async def test_api_key_rate_limit_increment_survives_route_error():
     await engine.dispose()
 
     assert rate_limit.request_count == 1
+
+
+@pytest.mark.asyncio
+async def test_settings_repository_get_many_returns_existing_values_only():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+
+    async with get_async_session(engine) as session:
+        repo = SettingsRepository(session)
+        await repo.set(Settings.GUEST_ACCESS_ENABLED, "false")
+        await repo.set(Settings.GUEST_RATE_LIMIT_PER_MINUTE, "12")
+
+        settings = await repo.get_many([Settings.GUEST_ACCESS_ENABLED, Settings.GUEST_RATE_LIMIT_PER_MINUTE, "missing"])
+
+    await engine.dispose()
+
+    assert settings == {
+        Settings.GUEST_ACCESS_ENABLED: "false",
+        Settings.GUEST_RATE_LIMIT_PER_MINUTE: "12",
+    }
+
+
+@pytest.mark.asyncio
+async def test_guest_auth_reads_settings_once():
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    statements = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    async with get_async_session(engine) as session:
+        await SettingsRepository(session).set(Settings.GUEST_RATE_LIMIT_PER_MINUTE, "30")
+        statements.clear()
+        await verify_api_key_or_guest(request=make_request(), session=session)
+
+    await engine.dispose()
+
+    settings_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "from settings" in statement
+    ]
+    assert len(settings_selects) == 1
