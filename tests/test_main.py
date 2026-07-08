@@ -6,6 +6,7 @@ import aiohttp
 import pytest
 
 from src import crawler
+from src.bot import DummyBot
 from src.main import BotManager, PersistenceManager
 
 
@@ -20,6 +21,35 @@ class CloseTrackingCrawler(crawler.BaseCrawler):
     async def close(self):
         self.closed = True
         await super().close()
+
+
+class BrokenCloseCrawler(CloseTrackingCrawler):
+    async def close(self):
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
+class StaticCrawler:
+    def __init__(self, articles: crawler.ArticleCollection):
+        self.articles = articles
+
+    async def get(self) -> crawler.ArticleCollection:
+        return self.articles
+
+
+def make_article(article_id: int = 1, extra: dict | None = None) -> crawler.BaseArticle:
+    return crawler.BaseArticle(
+        article_id=article_id,
+        title=f"Article {article_id}",
+        category="category",
+        site_name="site",
+        board_name="board",
+        writer_name="writer",
+        crawler_name="dummy",
+        url=f"https://example.com/{article_id}",
+        is_end=False,
+        extra=extra or {},
+    )
 
 
 def test_version():
@@ -221,6 +251,87 @@ async def test_close_closes_manager_owned_shared_session(monkeypatch):
     assert session.closed is True
     assert dumped is True
     assert db_closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_continues_when_crawler_close_fails(monkeypatch):
+    manager = BotManager()
+    dumped = False
+    db_closed = False
+
+    async def dump():
+        nonlocal dumped
+        dumped = True
+
+    async def close_db():
+        nonlocal db_closed
+        db_closed = True
+
+    monkeypatch.setattr("src.main.close_db", close_db)
+    manager.dump = dump
+    manager.bots = {}
+
+    session = aiohttp.ClientSession()
+    manager.session = session
+    broken_crawler = BrokenCloseCrawler("broken", ["https://example.com"], session=session)
+    manager.crawlers = {"broken": broken_crawler}
+
+    await manager.close()
+
+    assert broken_crawler.closed is True
+    assert session.closed is True
+    assert dumped is True
+    assert db_closed is True
+
+
+@pytest.mark.asyncio
+async def test_deserialize_bots_logs_loaded_message_count(caplog):
+    bot = DummyBot("dummy")
+
+    try:
+        with caplog.at_level("INFO", logger="PersistenceManager"):
+            await PersistenceManager().deserialize_bots(
+                {
+                    "dummy": {
+                        "queue": [],
+                        "cache": {
+                            "a": {"1": "message 1", "2": "message 2"},
+                            "long-crawler-name": {"3": "message 3"},
+                        },
+                    }
+                },
+                {"dummy": bot},
+            )
+    finally:
+        await bot.close()
+
+    assert "dummy: 3 message(s) loaded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_crawling_detects_price_added_to_empty_extra():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                1: make_article(1, extra={}),
+            }
+        )
+    }
+
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    1: make_article(1, extra={"price": "10,000원"}),
+                }
+            )
+        ),
+    )
+
+    assert [article["article_id"] for article in result["update"]] == [1]
 
 
 @pytest.mark.asyncio

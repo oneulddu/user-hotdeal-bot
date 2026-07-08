@@ -321,7 +321,7 @@ class TelegramBot(BaseBot[telegram.Message]):
         self.bot = telegram.Bot(token)
         self.target = target
 
-    async def _send(self, data: BaseArticle, retry: bool = False) -> telegram.Message | None:
+    async def _send(self, data: BaseArticle) -> telegram.Message | None:
         kwargs = self._make_message(data)
         msg = None
 
@@ -346,7 +346,7 @@ class TelegramBot(BaseBot[telegram.Message]):
                 )
                 logfire.warn("Rate limited, retrying", retry_after=e.retry_after, target=self.target)
                 await asyncio.sleep(e.retry_after)
-                msg = await self._send(data, retry=False)
+                msg = await self._send(data)
             except telegram.error.TimedOut as e:
                 self.logger.error(
                     "Send message timeout (%s): %s (%s) -> %s", e, data["title"], data["url"], self.target
@@ -363,13 +363,11 @@ class TelegramBot(BaseBot[telegram.Message]):
                 )
                 logfire.error("Telegram error", error=str(e), error_type=e.__class__.__name__, target=self.target)
 
-            if msg is None and retry:
-                msg = await self._send(data, retry=False)
             if msg is not None:
                 await self.set_msg_obj(data, msg)
             return msg
 
-    async def _edit(self, data: BaseArticle, retry: bool = False):
+    async def _edit(self, data: BaseArticle):
         msg = await self.get_msg_obj(data)
         if msg is None:
             self.logger.warning("Message not found: %s (%s)", data["title"], data["url"])
@@ -387,7 +385,7 @@ class TelegramBot(BaseBot[telegram.Message]):
                 msg.message_id,
             )
             await asyncio.sleep(e.retry_after)
-            await self._edit(data, retry=False)
+            await self._edit(data)
         except telegram.error.TimedOut as e:
             self.logger.error("Edit message timeout (%s): %s (%s) <- %s", e, data["title"], data["url"], msg.message_id)
         except telegram.error.BadRequest as e:
