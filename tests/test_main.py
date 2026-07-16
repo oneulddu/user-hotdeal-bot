@@ -105,7 +105,47 @@ async def test_dump_data_replaces_file_atomically_without_temp_leftovers(tmp_pat
 
     data = json.loads(dump_file.read_text(encoding="utf-8"))
     assert data["crawler"]["dummy"]["1"]["title"] == "Article 1"
+    assert data["article_high_water_marks"] == {"dummy": 1}
     assert not dump_file.with_suffix(".json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_article_high_water_mark_survives_dump_after_article_removal(tmp_path):
+    dump_file = tmp_path / "dump.json"
+    persistence = PersistenceManager()
+
+    await persistence.dump_data(
+        {"dummy": crawler.ArticleCollection({1: make_article(1)})},
+        {},
+        str(dump_file),
+        {"dummy": 2},
+    )
+
+    loaded_persistence = PersistenceManager()
+    await loaded_persistence.load_data(str(dump_file), {"dummy": object()}, {})
+
+    assert loaded_persistence.article_high_water_marks == {"dummy": 2}
+
+
+@pytest.mark.asyncio
+async def test_load_data_derives_high_water_mark_from_legacy_dump(tmp_path):
+    dump_file = tmp_path / "dump.json"
+    dump_file.write_text(
+        json.dumps(
+            {
+                "version": "2.2.1",
+                "crawler": {"dummy": {"3": make_article(3)}},
+                "bot": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    persistence = PersistenceManager()
+
+    article_cache = await persistence.load_data(str(dump_file), {"dummy": object()}, {})
+
+    assert 3 in article_cache["dummy"]
+    assert persistence.article_high_water_marks == {"dummy": 3}
 
 
 @pytest.mark.asyncio
@@ -332,6 +372,54 @@ async def test_crawling_detects_price_added_to_empty_extra():
     )
 
     assert [article["article_id"] for article in result["update"]] == [1]
+
+
+@pytest.mark.asyncio
+async def test_crawling_does_not_resend_latest_article_after_transient_disappearance():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                101: make_article(101),
+            }
+        )
+    }
+
+    disappeared = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100)})),
+    )
+    reappeared = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    100: make_article(100),
+                    101: make_article(101),
+                }
+            )
+        ),
+    )
+    next_article = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    100: make_article(100),
+                    101: make_article(101),
+                    102: make_article(102),
+                }
+            )
+        ),
+    )
+
+    assert [article["article_id"] for article in disappeared["remove"]] == [101]
+    assert reappeared["new"] == []
+    assert [article["article_id"] for article in next_article["new"]] == [102]
+    assert 101 in manager.article_cache["dummy"]
+    assert manager.article_high_water_marks["dummy"] == 102
 
 
 @pytest.mark.asyncio
