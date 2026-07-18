@@ -557,6 +557,7 @@ class BotManager:
             return result
 
         # 글 목록 페이지 뒤로 넘어가 추적하지 않게 된 게시글들 메모리에서 삭제
+        previous_cache_max = max(self.article_cache[name], default=0)
         self.article_cache[name].remove_expired(id_min)
         self._db_backfilled_article_keys.intersection_update(
             (crawler_name, article_id)
@@ -583,8 +584,9 @@ class BotManager:
 
         # 삭제된 최대 ID는 위에서 캐시에서 제거되므로 신규 판정 기준을 영구 오염시키지 않는다.
         # 현재 목록에 실제로 존재하는 ID의 기존 정렬 의미는 그대로 유지한다.
+        current_cache_max = max(self.article_cache[name], default=0)
         id_cache_max = max(
-            max(self.article_cache[name], default=0),
+            current_cache_max or previous_cache_max,
             max((article_id for article_id in recent_data if article_id in tombstones), default=0),
         )
         candidates = recent_data.get_new(id_cache_max)

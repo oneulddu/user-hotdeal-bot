@@ -574,6 +574,32 @@ async def test_crawling_does_not_notify_older_article_below_reappeared_latest():
 
 
 @pytest.mark.asyncio
+async def test_crawling_preserves_previous_max_when_cache_has_no_overlap():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                101: make_article(101),
+            }
+        )
+    }
+
+    older_only = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({99: make_article(99)})),
+    )
+    next_article = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({99: make_article(99), 102: make_article(102)})),
+    )
+
+    assert older_only["new"] == []
+    assert [article["article_id"] for article in next_article["new"]] == [102]
+
+
+@pytest.mark.asyncio
 async def test_crawling_prunes_old_tombstones_and_notifies_after_cache_empties():
     manager = BotManager()
     manager.bots = {}
