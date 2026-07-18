@@ -267,6 +267,7 @@ class PersistenceManager:
             }
             if len(valid_values) != len(values):
                 self.logger.warning("Invalid article tombstone value(s) ignored for %s", crawler_name)
+                invalid_tombstone_crawlers.add(crawler_name)
             if valid_values:
                 self.article_tombstones[crawler_name] = valid_values
 

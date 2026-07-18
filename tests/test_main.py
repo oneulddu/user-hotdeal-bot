@@ -189,7 +189,7 @@ async def test_load_data_uses_legacy_mark_for_malformed_crawler_tombstones(tmp_p
                 "version": "2.2.1",
                 "crawler": {"dummy": {"100": make_article(100)}},
                 "bot": {},
-                "article_tombstones": {"dummy": None},
+                "article_tombstones": {"dummy": [False]},
                 "article_high_water_marks": {"dummy": 102},
             }
         ),
