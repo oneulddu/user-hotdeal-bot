@@ -105,12 +105,12 @@ async def test_dump_data_replaces_file_atomically_without_temp_leftovers(tmp_pat
 
     data = json.loads(dump_file.read_text(encoding="utf-8"))
     assert data["crawler"]["dummy"]["1"]["title"] == "Article 1"
-    assert data["article_high_water_marks"] == {"dummy": 1}
+    assert data["article_tombstones"] == {}
     assert not dump_file.with_suffix(".json.tmp").exists()
 
 
 @pytest.mark.asyncio
-async def test_article_high_water_mark_survives_dump_after_article_removal(tmp_path):
+async def test_article_tombstones_survive_dump_and_load(tmp_path):
     dump_file = tmp_path / "dump.json"
     persistence = PersistenceManager()
 
@@ -118,17 +118,17 @@ async def test_article_high_water_mark_survives_dump_after_article_removal(tmp_p
         {"dummy": crawler.ArticleCollection({1: make_article(1)})},
         {},
         str(dump_file),
-        {"dummy": 2},
+        {"dummy": {2}},
     )
 
     loaded_persistence = PersistenceManager()
     await loaded_persistence.load_data(str(dump_file), {"dummy": object()}, {})
 
-    assert loaded_persistence.article_high_water_marks == {"dummy": 2}
+    assert loaded_persistence.article_tombstones == {"dummy": {2}}
 
 
 @pytest.mark.asyncio
-async def test_load_data_derives_high_water_mark_from_legacy_dump(tmp_path):
+async def test_load_data_without_duplicate_tracking_uses_empty_tombstones(tmp_path):
     dump_file = tmp_path / "dump.json"
     dump_file.write_text(
         json.dumps(
@@ -145,7 +145,61 @@ async def test_load_data_derives_high_water_mark_from_legacy_dump(tmp_path):
     article_cache = await persistence.load_data(str(dump_file), {"dummy": object()}, {})
 
     assert 3 in article_cache["dummy"]
-    assert persistence.article_high_water_marks == {"dummy": 3}
+    assert persistence.article_tombstones == {}
+
+
+@pytest.mark.asyncio
+async def test_load_data_migrates_missing_legacy_high_water_mark_to_tombstone(tmp_path):
+    dump_file = tmp_path / "dump.json"
+    dump_file.write_text(
+        json.dumps(
+            {
+                "version": "2.2.1",
+                "crawler": {"dummy": {"100": make_article(100)}},
+                "bot": {},
+                "article_high_water_marks": {"dummy": 102},
+            }
+        ),
+        encoding="utf-8",
+    )
+    persistence = PersistenceManager()
+
+    article_cache = await persistence.load_data(str(dump_file), {"dummy": object()}, {})
+
+    assert persistence.article_tombstones == {"dummy": {102}}
+
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = article_cache
+    manager.article_tombstones = persistence.article_tombstones
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100), 101: make_article(101)})),
+    )
+
+    assert [article["article_id"] for article in result["new"]] == [101]
+
+
+@pytest.mark.asyncio
+async def test_load_data_uses_legacy_mark_for_malformed_crawler_tombstones(tmp_path):
+    dump_file = tmp_path / "dump.json"
+    dump_file.write_text(
+        json.dumps(
+            {
+                "version": "2.2.1",
+                "crawler": {"dummy": {"100": make_article(100)}},
+                "bot": {},
+                "article_tombstones": {"dummy": [False]},
+                "article_high_water_marks": {"dummy": 102},
+            }
+        ),
+        encoding="utf-8",
+    )
+    persistence = PersistenceManager()
+
+    await persistence.load_data(str(dump_file), {"dummy": object()}, {})
+
+    assert persistence.article_tombstones == {"dummy": {102}}
 
 
 @pytest.mark.asyncio
@@ -419,7 +473,163 @@ async def test_crawling_does_not_resend_latest_article_after_transient_disappear
     assert reappeared["new"] == []
     assert [article["article_id"] for article in next_article["new"]] == [102]
     assert 101 in manager.article_cache["dummy"]
-    assert manager.article_high_water_marks["dummy"] == 102
+    assert manager.article_tombstones["dummy"] == {101}
+
+
+@pytest.mark.asyncio
+async def test_crawling_notifies_new_article_below_previous_maximum():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                1000: make_article(1000),
+            }
+        )
+    }
+
+    await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100)})),
+    )
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    100: make_article(100),
+                    101: make_article(101),
+                }
+            )
+        ),
+    )
+
+    assert [article["article_id"] for article in result["new"]] == [101]
+    assert manager.article_tombstones["dummy"] == {1000}
+
+
+@pytest.mark.asyncio
+async def test_crawling_does_not_notify_unseen_older_article():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                101: make_article(101),
+            }
+        )
+    }
+
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    99: make_article(99),
+                    100: make_article(100),
+                    101: make_article(101),
+                }
+            )
+        ),
+    )
+
+    assert result["new"] == []
+    assert 99 in manager.article_cache["dummy"]
+
+
+@pytest.mark.asyncio
+async def test_crawling_does_not_notify_older_article_below_reappeared_latest():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                102: make_article(102),
+            }
+        )
+    }
+
+    await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100)})),
+    )
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    100: make_article(100),
+                    101: make_article(101),
+                    102: make_article(102),
+                }
+            )
+        ),
+    )
+
+    assert result["new"] == []
+    assert manager.article_tombstones["dummy"] == {102}
+
+
+@pytest.mark.asyncio
+async def test_crawling_preserves_previous_max_when_cache_has_no_overlap():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                101: make_article(101),
+            }
+        )
+    }
+
+    older_only = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({99: make_article(99)})),
+    )
+    next_article = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({99: make_article(99), 102: make_article(102)})),
+    )
+
+    assert older_only["new"] == []
+    assert [article["article_id"] for article in next_article["new"]] == [102]
+
+
+@pytest.mark.asyncio
+async def test_crawling_prunes_old_tombstones_and_notifies_after_cache_empties():
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {
+        "dummy": crawler.ArticleCollection(
+            {
+                100: make_article(100),
+                101: make_article(101),
+            }
+        )
+    }
+
+    await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100)})),
+    )
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(
+            crawler.ArticleCollection(
+                {
+                    102: make_article(102),
+                    103: make_article(103),
+                }
+            )
+        ),
+    )
+
+    assert [article["article_id"] for article in result["new"]] == [102, 103]
+    assert manager.article_tombstones["dummy"] == set()
 
 
 @pytest.mark.asyncio

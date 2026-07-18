@@ -24,6 +24,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     # "User-Agent": f"user-hotdeal-bot/{__version__} (+https://github.com/krepe90/user-hotdeal-bot)"
 }
+MAX_ARTICLE_TOMBSTONES = 4_096
 
 
 def load_config_file(config_path: str = "config.yaml") -> "Config":
@@ -110,6 +111,8 @@ class DumpedData(TypedDict):
     version: str
     crawler: dict[str, crawler.ArticleCollection]
     bot: dict[str, bot.SerializedBotData]
+    article_tombstones: NotRequired[dict[str, list[int]]]
+    # v2.2.1 직후 잠시 사용한 형식. article_tombstones로 마이그레이션하기 위해 읽기만 지원한다.
     article_high_water_marks: NotRequired[dict[str, int]]
 
 
@@ -132,7 +135,7 @@ class PersistenceManager:
 
     def __init__(self):
         self.logger = logging.getLogger("PersistenceManager")
-        self.article_high_water_marks: dict[str, int] = {}
+        self.article_tombstones: dict[str, set[int]] = {}
 
     def _empty_article_cache(self, crawlers: dict[str, crawler.BaseCrawler]) -> dict[str, crawler.ArticleCollection]:
         return {crawler_name: crawler.ArticleCollection() for crawler_name in crawlers.keys()}
@@ -225,7 +228,7 @@ class PersistenceManager:
         Returns:
             dict[str, crawler.ArticleCollection]: 로드된 게시글 캐시
         """
-        self.article_high_water_marks = {}
+        self.article_tombstones = {}
         if not os.path.isfile(dump_file_path):
             self.logger.warning("Dump file doesn't exists")
             # 빈 article_cache 초기화
@@ -246,22 +249,47 @@ class PersistenceManager:
 
         # 게시글 정보 역직렬화
         article_cache = await self.deserialize_articles(data["crawler"], crawlers)
+        raw_tombstones = data.get("article_tombstones", {})
+        tombstones_field_valid = isinstance(raw_tombstones, dict)
+        invalid_tombstone_crawlers: set[str] = set()
+        if not tombstones_field_valid:
+            self.logger.warning("Dump file article_tombstones must be an object; ignoring tombstones")
+            raw_tombstones = {}
+
+        for crawler_name, values in raw_tombstones.items():
+            if not isinstance(crawler_name, str) or not isinstance(values, list):
+                self.logger.warning("Invalid article tombstones ignored: %r=%r", crawler_name, values)
+                if isinstance(crawler_name, str):
+                    invalid_tombstone_crawlers.add(crawler_name)
+                continue
+            valid_values = {
+                value for value in values if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            }
+            if len(valid_values) != len(values):
+                self.logger.warning("Invalid article tombstone value(s) ignored for %s", crawler_name)
+                invalid_tombstone_crawlers.add(crawler_name)
+            if valid_values:
+                self.article_tombstones[crawler_name] = valid_values
+
+        # high-water mark 방식은 큰 ID 하나가 섞이면 이후의 정상 알림까지 영구 차단한다.
+        # 구 형식에서 실제 관측이 확실한 최대 ID 하나만 tombstone으로 이관한다.
         raw_high_water_marks = data.get("article_high_water_marks", {})
         if not isinstance(raw_high_water_marks, dict):
-            self.logger.warning("Dump file article_high_water_marks must be an object; deriving from article cache")
+            self.logger.warning("Dump file article_high_water_marks must be an object; ignoring legacy marks")
             raw_high_water_marks = {}
-
         for crawler_name, value in raw_high_water_marks.items():
             if not isinstance(crawler_name, str) or not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 self.logger.warning("Invalid article high-water mark ignored: %r=%r", crawler_name, value)
                 continue
-            self.article_high_water_marks[crawler_name] = value
-
-        for crawler_name, articles in article_cache.items():
-            self.article_high_water_marks[crawler_name] = max(
-                self.article_high_water_marks.get(crawler_name, 0),
-                max(articles, default=0),
-            )
+            if (
+                tombstones_field_valid
+                and crawler_name in raw_tombstones
+                and crawler_name not in invalid_tombstone_crawlers
+            ):
+                continue
+            articles = article_cache.get(crawler_name, {})
+            if value not in articles:
+                self.article_tombstones.setdefault(crawler_name, set()).add(value)
         # 봇 정보 역직렬화
         await self.deserialize_bots(data["bot"], bots)
 
@@ -272,7 +300,7 @@ class PersistenceManager:
         article_cache: dict[str, crawler.ArticleCollection],
         bots: dict[str, bot.BaseBot],
         dump_file_path: str = "dump.json",
-        article_high_water_marks: dict[str, int] | None = None,
+        article_tombstones: dict[str, set[int]] | None = None,
     ):
         """데이터를 지정한 경로의 json 파일에 저장
 
@@ -281,18 +309,15 @@ class PersistenceManager:
             bots: 봇 목록
             dump_file_path: 데이터 파일 경로
         """
-        high_water_marks = dict(article_high_water_marks or {})
-        for crawler_name, articles in article_cache.items():
-            high_water_marks[crawler_name] = max(
-                high_water_marks.get(crawler_name, 0),
-                max(articles, default=0),
-            )
-
         dump = {
             "version": __version__,
             "crawler": article_cache,
             "bot": {bot_name: await bot_obj.to_dict() for bot_name, bot_obj in bots.items()},
-            "article_high_water_marks": high_water_marks,
+            "article_tombstones": {
+                crawler_name: sorted(article_ids)
+                for crawler_name, article_ids in (article_tombstones or {}).items()
+                if article_ids
+            },
         }
         tmp_file_path = f"{dump_file_path}.tmp"
         try:
@@ -311,7 +336,7 @@ class BotManager:
         self.logger = logging.getLogger("BotManager")
         self.closed = False
         self.persistence = PersistenceManager()
-        self.article_high_water_marks: dict[str, int] = {}
+        self.article_tombstones: dict[str, set[int]] = {}
         self._db_backfilled_article_keys: set[tuple[str, int]] = set()
         self._run_lock = asyncio.Lock()
         self._bg_tasks: set[asyncio.Task[None]] = set()
@@ -455,7 +480,9 @@ class BotManager:
         # 설정 및 데이터 로드
         await self.load_config(config_file_path)
         self.article_cache = await self.persistence.load_data(dump_file_path, self.crawlers, self.bots)
-        self.article_high_water_marks = dict(self.persistence.article_high_water_marks)
+        self.article_tombstones = {
+            crawler_name: set(article_ids) for crawler_name, article_ids in self.persistence.article_tombstones.items()
+        }
 
     async def load_config(self, config_file_path: str = "config.yaml"):
         """주어진 경로의 설정 파일로부터 설정 로드, 크롤러 및 봇 초기화
@@ -495,7 +522,7 @@ class BotManager:
             self.article_cache,
             self.bots,
             dump_file_path,
-            self.article_high_water_marks,
+            self.article_tombstones,
         )
 
     async def _crawling(self, name: str, cwr: crawler.BaseCrawler) -> CrawlingResult:
@@ -523,21 +550,15 @@ class BotManager:
         # 초기화
         if name not in self.article_cache:
             self.article_cache[name] = crawler.ArticleCollection()
+        tombstones = self.article_tombstones.setdefault(name, set())
         if not self.article_cache[name]:
             self.article_cache[name].update(recent_data)
-            self.article_high_water_marks[name] = max(
-                self.article_high_water_marks.get(name, 0),
-                max(recent_data),
-            )
+            tombstones.difference_update([article_id for article_id in tombstones if article_id < id_min])
             self.logger.info("%s: Article cache initialized, skip crawling", cwr.__class__.__name__)
             return result
 
-        high_water_mark = max(
-            self.article_high_water_marks.get(name, 0),
-            max(self.article_cache[name], default=0),
-        )
-
         # 글 목록 페이지 뒤로 넘어가 추적하지 않게 된 게시글들 메모리에서 삭제
+        previous_cache_max = max(self.article_cache[name], default=0)
         self.article_cache[name].remove_expired(id_min)
         self._db_backfilled_article_keys.intersection_update(
             (crawler_name, article_id)
@@ -547,24 +568,36 @@ class BotManager:
         # 봇 메시지 객체들도 비슷한 방식으로 삭제
         for bot_name, bot_instance in self.bots.items():
             await bot_instance.remove_expired_msg_obj(name, id_min)
-        # 새로 추가된 글을 result["new"]에 저장 후 메모리 업데이트
-        _new_articles = recent_data.get_new(high_water_mark)
-        result["new"].extend(_new_articles.values())
-        self.article_cache[name].update(
-            {
-                article_id: article
-                for article_id, article in recent_data.items()
-                if article_id not in self.article_cache[name]
-            }
+
+        # 사라진 글을 먼저 캐시에서 분리해야 일시적인 큰 ID가 신규 판정 기준을 계속 오염시키지 않는다.
+        removed_articles = [
+            article for article_id, article in self.article_cache[name].items() if article_id not in recent_data
+        ]
+        result["remove"].extend(removed_articles)
+        for article in removed_articles:
+            tombstones.add(article["article_id"])
+            self.article_cache[name].pop(article["article_id"], None)
+
+        # 현재 목록 범위보다 오래된 tombstone과 비정상적으로 누적된 항목을 정리한다.
+        tombstones.difference_update([article_id for article_id in tombstones if article_id < id_min])
+        if len(tombstones) > MAX_ARTICLE_TOMBSTONES:
+            tombstones.difference_update(sorted(tombstones)[:-MAX_ARTICLE_TOMBSTONES])
+
+        # 삭제된 최대 ID는 위에서 캐시에서 제거되므로 신규 판정 기준을 영구 오염시키지 않는다.
+        # 현재 목록에 실제로 존재하는 ID의 기존 정렬 의미는 그대로 유지한다.
+        current_cache_max = max(self.article_cache[name], default=0)
+        id_cache_max = max(
+            current_cache_max or previous_cache_max,
+            max((article_id for article_id in recent_data if article_id in tombstones), default=0),
         )
-        self.article_high_water_marks[name] = max(high_water_mark, max(recent_data))
+        candidates = recent_data.get_new(id_cache_max)
+        _new_articles = {
+            article_id: article for article_id, article in candidates.items() if article_id not in tombstones
+        }
+        result["new"].extend(_new_articles.values())
+
         # 기존 게시글 기준으로 탐색
         for article_id, article in self.article_cache[name].items():
-            # 삭제된 글(기존 게시글의 ID가 새 크롤링 결과의 key에 없음)이라면 result["remove"]에 저장
-            if article_id not in recent_data:
-                result["remove"].append(article)
-                continue
-
             new_article = recent_data[article_id]
             # 메시지 업데이트가 필요한 경우 (품절, 제목 변경, 가격 변경 등)
             if article["is_end"] != new_article["is_end"]:
@@ -578,9 +611,8 @@ class BotManager:
                 result["update"].append(article)
             article.update(new_article)
 
-        # 삭제 확인된 글 객체와 메시지 객체를 메모리에서 제거
-        for article in result["remove"]:
-            self.article_cache[name].pop(article["article_id"], None)
+        # 오래된 unseen 글은 알리지 않되 캐시에 넣어, 캐시가 비어 다음 신규 글까지 누락되는 일을 막는다.
+        self.article_cache[name].update(recent_data)
         return result
 
     async def crawling(self) -> CrawlingResult:
