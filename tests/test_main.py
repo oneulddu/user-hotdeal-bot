@@ -164,9 +164,20 @@ async def test_load_data_migrates_missing_legacy_high_water_mark_to_tombstone(tm
     )
     persistence = PersistenceManager()
 
-    await persistence.load_data(str(dump_file), {"dummy": object()}, {})
+    article_cache = await persistence.load_data(str(dump_file), {"dummy": object()}, {})
 
-    assert persistence.article_tombstones == {"dummy": {101, 102}}
+    assert persistence.article_tombstones == {"dummy": {102}}
+
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = article_cache
+    manager.article_tombstones = persistence.article_tombstones
+    result = await manager._crawling(
+        "dummy",
+        StaticCrawler(crawler.ArticleCollection({100: make_article(100), 101: make_article(101)})),
+    )
+
+    assert [article["article_id"] for article in result["new"]] == [101]
 
 
 @pytest.mark.asyncio
@@ -188,7 +199,7 @@ async def test_load_data_uses_legacy_mark_for_malformed_crawler_tombstones(tmp_p
 
     await persistence.load_data(str(dump_file), {"dummy": object()}, {})
 
-    assert persistence.article_tombstones == {"dummy": {101, 102}}
+    assert persistence.article_tombstones == {"dummy": {102}}
 
 
 @pytest.mark.asyncio

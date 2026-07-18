@@ -25,7 +25,6 @@ HEADERS = {
     # "User-Agent": f"user-hotdeal-bot/{__version__} (+https://github.com/krepe90/user-hotdeal-bot)"
 }
 MAX_ARTICLE_TOMBSTONES = 4_096
-MAX_LEGACY_TOMBSTONE_GAP = MAX_ARTICLE_TOMBSTONES
 
 
 def load_config_file(config_path: str = "config.yaml") -> "Config":
@@ -272,7 +271,7 @@ class PersistenceManager:
                 self.article_tombstones[crawler_name] = valid_values
 
         # high-water mark 방식은 큰 ID 하나가 섞이면 이후의 정상 알림까지 영구 차단한다.
-        # 구 형식의 누락 구간이 합리적인 크기면 전체를, 너무 크면 최대 ID만 tombstone으로 이관한다.
+        # 구 형식에서 실제 관측이 확실한 최대 ID 하나만 tombstone으로 이관한다.
         raw_high_water_marks = data.get("article_high_water_marks", {})
         if not isinstance(raw_high_water_marks, dict):
             self.logger.warning("Dump file article_high_water_marks must be an object; ignoring legacy marks")
@@ -288,12 +287,7 @@ class PersistenceManager:
             ):
                 continue
             articles = article_cache.get(crawler_name, {})
-            cache_max = max(articles, default=0)
-            gap = value - cache_max
-            if 0 < gap <= MAX_LEGACY_TOMBSTONE_GAP:
-                self.article_tombstones.setdefault(crawler_name, set()).update(range(cache_max + 1, value + 1))
-            elif value not in articles:
-                # 큰 간격 전체를 이관하면 dump가 비정상적으로 커지므로 마지막 ID만 보존한다.
+            if value not in articles:
                 self.article_tombstones.setdefault(crawler_name, set()).add(value)
         # 봇 정보 역직렬화
         await self.deserialize_bots(data["bot"], bots)
