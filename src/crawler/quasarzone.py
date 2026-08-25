@@ -5,9 +5,15 @@ from bs4 import BeautifulSoup, Tag
 
 from .base_crawler import BaseArticle, BaseCrawler
 
+QUASARZONE_BACKOFF_STATUS_CODES = frozenset({403, 429})
+QUASARZONE_BACKOFF_DELAYS_SECONDS = (300, 1800, 7200, 43200)
+
 
 class QuasarzoneMobileCrawler(BaseCrawler):
     # deprecated
+    RESPONSE_BACKOFF_STATUS_CODES = QUASARZONE_BACKOFF_STATUS_CODES
+    RESPONSE_BACKOFF_DELAYS_SECONDS = QUASARZONE_BACKOFF_DELAYS_SECONDS
+
     async def parsing(self, html: str) -> dict[int, BaseArticle]:
         soup = BeautifulSoup(html, "html.parser")
         # 게시판 이름
@@ -83,6 +89,9 @@ class QuasarzoneMobileCrawler(BaseCrawler):
 
 
 class QuasarzoneCrawler(BaseCrawler):
+    RESPONSE_BACKOFF_STATUS_CODES = QUASARZONE_BACKOFF_STATUS_CODES
+    RESPONSE_BACKOFF_DELAYS_SECONDS = QUASARZONE_BACKOFF_DELAYS_SECONDS
+
     async def parsing(self, html: str) -> dict[int, BaseArticle]:
         soup = BeautifulSoup(html, "html.parser")
         # 게시판 이름
