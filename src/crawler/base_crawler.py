@@ -1,9 +1,12 @@
 import asyncio
 import datetime
 import logging
+import math
 import os
 import ssl
+import time
 from abc import ABCMeta, abstractmethod
+from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from typing import Any, Self, TypedDict
 
@@ -11,6 +14,37 @@ import aiohttp
 import logfire
 
 MAX_ERROR_DUMPS = 50
+MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
+
+
+def parse_retry_after_seconds(value, *, now: datetime.datetime | None = None) -> int | None:
+    """Parse Retry-After delta-seconds or HTTP-date into a non-negative delay."""
+    if value is None:
+        return None
+
+    raw_value = str(value).strip()
+    if raw_value.isdigit():
+        if len(raw_value) > 10:
+            return MAX_RETRY_AFTER_SECONDS
+        try:
+            return min(int(raw_value), MAX_RETRY_AFTER_SECONDS)
+        except ValueError:
+            return None
+
+    try:
+        retry_at = parsedate_to_datetime(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at is None:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=datetime.UTC)
+
+    current_time = now or datetime.datetime.now(datetime.UTC)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=datetime.UTC)
+    delay_seconds = max(0, math.ceil((retry_at - current_time).total_seconds()))
+    return min(delay_seconds, MAX_RETRY_AFTER_SECONDS)
 
 
 class BaseArticle(TypedDict):
@@ -65,6 +99,9 @@ class ArticleCollection(dict[int, BaseArticle]):
 
 
 class BaseCrawler(metaclass=ABCMeta):
+    RESPONSE_BACKOFF_STATUS_CODES: frozenset[int] = frozenset()
+    RESPONSE_BACKOFF_DELAYS_SECONDS: tuple[int, ...] = ()
+
     def __init__(
         self,
         name: str,
@@ -93,6 +130,9 @@ class BaseCrawler(metaclass=ABCMeta):
         self.request_cookies = self._parse_cookie_header(self.cookie)
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
         self._prev_status = 200
+        self._response_backoff_failures: dict[str, int] = {}
+        self._response_backoff_until: dict[str, float] = {}
+        self._response_backoff_locks: dict[str, asyncio.Lock] = {}
 
         # SSL 컨텍스트 설정
         self._ssl_context: ssl.SSLContext | bool | None = None
@@ -198,6 +238,18 @@ class BaseCrawler(metaclass=ABCMeta):
         Returns:
             str | None: HTML 문자열 (실패한 경우 None 반환)
         """
+        if not self.RESPONSE_BACKOFF_STATUS_CODES or not self.RESPONSE_BACKOFF_DELAYS_SECONDS:
+            return await self._request_with_backoff(url)
+
+        lock = self._response_backoff_locks.setdefault(url, asyncio.Lock())
+        async with lock:
+            return await self._request_with_backoff(url)
+
+    async def _request_with_backoff(self, url: str) -> str | None:
+        """Request one URL after serializing its response-backoff state."""
+        if self._response_backoff_until.get(url, 0) > time.monotonic():
+            return
+
         retry_count = 2
         for _ in range(retry_count):
             resp = await self._request(url)
@@ -209,6 +261,7 @@ class BaseCrawler(metaclass=ABCMeta):
 
         async with resp:
             if resp.status != 200:
+                self._schedule_response_backoff(url, resp.status, resp.headers)
                 if resp.status != self._prev_status:
                     self.logger.error("Client response error: %s (%s)", resp.status, url)
                     await self.dump_http_response(resp)
@@ -218,6 +271,7 @@ class BaseCrawler(metaclass=ABCMeta):
                 return
             else:
                 self._prev_status = resp.status
+                self._clear_response_backoff(url)
 
             try:
                 await resp.read()
@@ -232,6 +286,33 @@ class BaseCrawler(metaclass=ABCMeta):
                 self.logger.error("Cannot get response html string: %s", e)
                 return
         return html
+
+    def _schedule_response_backoff(self, url: str, status: int, headers) -> None:
+        if status not in self.RESPONSE_BACKOFF_STATUS_CODES or not self.RESPONSE_BACKOFF_DELAYS_SECONDS:
+            return
+
+        failure_count = self._response_backoff_failures.get(url, 0) + 1
+        self._response_backoff_failures[url] = failure_count
+        delay_index = min(failure_count - 1, len(self.RESPONSE_BACKOFF_DELAYS_SECONDS) - 1)
+        delay_seconds = self.RESPONSE_BACKOFF_DELAYS_SECONDS[delay_index]
+
+        retry_after = headers.get("Retry-After") if headers is not None else None
+        retry_after_seconds = parse_retry_after_seconds(retry_after)
+        if retry_after_seconds is not None:
+            delay_seconds = max(delay_seconds, retry_after_seconds)
+
+        self._response_backoff_until[url] = time.monotonic() + delay_seconds
+        self.logger.warning(
+            "Response backoff scheduled: status=%d delay=%ds failures=%d (%s)",
+            status,
+            delay_seconds,
+            failure_count,
+            url,
+        )
+
+    def _clear_response_backoff(self, url: str) -> None:
+        self._response_backoff_failures.pop(url, None)
+        self._response_backoff_until.pop(url, None)
 
     @abstractmethod
     async def parsing(self, html: str) -> dict[int, BaseArticle]:

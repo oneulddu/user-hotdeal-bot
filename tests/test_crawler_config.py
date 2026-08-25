@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import os
 
 import aiohttp
@@ -92,6 +93,57 @@ class FakeDumpResponse:
         return b"<html>error</html>"
 
 
+class FakeHTTPResponse:
+    def __init__(self, status, body="", headers=None):
+        self.status = status
+        self.body = body
+        self.headers = headers or {}
+        self.exited = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.exited = True
+        return None
+
+    async def read(self):
+        return self.body.encode()
+
+    def get_encoding(self):
+        return "utf-8"
+
+    async def text(self, encoding=None):
+        return self.body
+
+
+class FakeHTTPSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+        self.closed = False
+
+    async def get(self, url, **kwargs):
+        response = self.responses[self.calls]
+        self.calls += 1
+        return response
+
+
+class ConcurrentHTTPSession(FakeHTTPSession):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.second_started = asyncio.Event()
+
+    async def get(self, url, **kwargs):
+        call_index = self.calls
+        self.calls += 1
+        if call_index == 0:
+            await self.second_started.wait()
+        else:
+            self.second_started.set()
+        return self.responses[call_index]
+
+
 @pytest.mark.asyncio
 async def test_dummy_crawler_accepts_base_crawler_options():
     async with aiohttp.ClientSession() as session:
@@ -124,6 +176,167 @@ async def test_base_crawler_fetches_multiple_urls_concurrently():
 
     assert set(data) == {1, 2}
     assert crawler_instance.started_urls == ["https://example.com/1", "https://example.com/2"]
+
+
+@pytest.mark.asyncio
+async def test_quasarzone_403_uses_escalating_backoff_and_resets_after_success(monkeypatch):
+    clock = [1000.0]
+    responses = [
+        FakeHTTPResponse(403),
+        FakeHTTPResponse(429),
+        FakeHTTPResponse(403),
+        FakeHTTPResponse(403),
+        FakeHTTPResponse(403),
+        FakeHTTPResponse(200, body="<html>ok</html>"),
+    ]
+    session = FakeHTTPSession(responses)
+    crawler_instance = crawler.QuasarzoneCrawler(
+        "quasarzone_saleinfo",
+        ["https://quasarzone.com/bbs/qb_saleinfo"],
+        session=session,
+    )
+
+    async def skip_dump(response):
+        return None
+
+    monkeypatch.setattr(base_crawler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(crawler_instance, "dump_http_response", skip_dump)
+    url = crawler_instance.url_list[0]
+
+    assert await crawler_instance.request(url) is None
+    assert session.calls == 1
+    assert crawler_instance._response_backoff_until[url] == 1300.0
+
+    clock[0] = 1299.0
+    assert await crawler_instance.request(url) is None
+    assert session.calls == 1
+
+    clock[0] = 1300.0
+    assert await crawler_instance.request(url) is None
+    assert session.calls == 2
+    assert crawler_instance._response_backoff_until[url] == 3100.0
+
+    clock[0] = 3100.0
+    assert await crawler_instance.request(url) is None
+    assert crawler_instance._response_backoff_until[url] == 10300.0
+
+    clock[0] = 10300.0
+    assert await crawler_instance.request(url) is None
+    assert crawler_instance._response_backoff_until[url] == 53500.0
+
+    clock[0] = 53500.0
+    assert await crawler_instance.request(url) is None
+    assert crawler_instance._response_backoff_until[url] == 96700.0
+
+    clock[0] = 96700.0
+    assert await crawler_instance.request(url) == "<html>ok</html>"
+    assert session.calls == 6
+    assert url not in crawler_instance._response_backoff_until
+    assert url not in crawler_instance._response_backoff_failures
+    assert all(response.exited for response in responses)
+
+
+def test_retry_after_http_date_uses_utc_delay():
+    now = datetime.datetime(2026, 8, 26, 0, 0, tzinfo=datetime.UTC)
+
+    delay = base_crawler.parse_retry_after_seconds(
+        "Wed, 26 Aug 2026 02:00:00 GMT",
+        now=now,
+    )
+
+    assert delay == 7200
+    assert base_crawler.parse_retry_after_seconds("not-a-date", now=now) is None
+    assert base_crawler.parse_retry_after_seconds("9" * 5000, now=now) == base_crawler.MAX_RETRY_AFTER_SECONDS
+    assert base_crawler.parse_retry_after_seconds("9999999999", now=now) == base_crawler.MAX_RETRY_AFTER_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_quasarzone_duplicate_url_counts_one_concurrent_failure(monkeypatch):
+    clock = [1000.0]
+    response = FakeHTTPResponse(429)
+    session = FakeHTTPSession([response])
+    url = "https://quasarzone.com/bbs/qb_saleinfo"
+    crawler_instance = crawler.QuasarzoneCrawler(
+        "quasarzone_saleinfo",
+        [url, url],
+        session=session,
+    )
+
+    async def skip_dump(dump_response):
+        return None
+
+    monkeypatch.setattr(base_crawler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(crawler_instance, "dump_http_response", skip_dump)
+
+    assert await crawler_instance.get() == {}
+    assert session.calls == 1
+    assert crawler_instance._response_backoff_failures[url] == 1
+    assert crawler_instance._response_backoff_until[url] == 1300.0
+    assert response.exited is True
+
+
+@pytest.mark.asyncio
+async def test_backoff_scope_is_quasarzone_only(monkeypatch):
+    assert crawler.QuasarzoneMobileCrawler.RESPONSE_BACKOFF_STATUS_CODES == frozenset({403, 429})
+
+    responses = [FakeHTTPResponse(403), FakeHTTPResponse(403)]
+    session = FakeHTTPSession(responses)
+    crawler_instance = crawler.DummyCrawler(
+        "dummy",
+        ["https://example.com"],
+        session=session,
+    )
+
+    async def skip_dump(response):
+        return None
+
+    monkeypatch.setattr(crawler_instance, "dump_http_response", skip_dump)
+    assert await crawler_instance.request("https://example.com") is None
+    assert await crawler_instance.request("https://example.com") is None
+    assert session.calls == 2
+    assert crawler_instance._response_backoff_until == {}
+
+
+@pytest.mark.asyncio
+async def test_non_backoff_crawler_keeps_duplicate_url_requests_concurrent():
+    url = "https://example.com"
+    session = ConcurrentHTTPSession(
+        [
+            FakeHTTPResponse(200, body="first"),
+            FakeHTTPResponse(200, body="second"),
+        ]
+    )
+    crawler_instance = crawler.DummyCrawler(
+        "dummy",
+        [url],
+        session=session,
+    )
+
+    results = await asyncio.wait_for(
+        asyncio.gather(crawler_instance.request(url), crawler_instance.request(url)),
+        timeout=0.2,
+    )
+
+    assert results == ["first", "second"]
+    assert session.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_after_value_is_bounded_before_deadline(monkeypatch):
+    clock = [1000.0]
+    response = FakeHTTPResponse(429, headers={"Retry-After": "9" * 5000})
+    session = FakeHTTPSession([response])
+    url = "https://quasarzone.com/bbs/qb_saleinfo"
+    crawler_instance = crawler.QuasarzoneCrawler("quasarzone_saleinfo", [url], session=session)
+
+    async def skip_dump(dump_response):
+        return None
+
+    monkeypatch.setattr(base_crawler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(crawler_instance, "dump_http_response", skip_dump)
+
+    assert await crawler_instance.request(url) is None
+    assert crawler_instance._response_backoff_until[url] == 1000.0 + base_crawler.MAX_RETRY_AFTER_SECONDS
 
 
 @pytest.mark.asyncio

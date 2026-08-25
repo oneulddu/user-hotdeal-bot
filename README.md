@@ -157,6 +157,10 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 | `logging` | [`logging.config.dictConfig`](https://docs.python.org/ko/3/howto/logging-cookbook.html#customizing-handlers-with-dictconfig) 형식의 로깅 설정 |
 | `logfire` | [Logfire](https://logfire.pydantic.dev/) 원격 로깅 설정 (기본 `enabled: false`) |
 
+Quasarzone 크롤러는 HTTP 403/429가 반복될 때 5분, 30분, 2시간, 12시간 순으로
+요청 간격을 늘립니다. 접근이 계속 차단되는 서버에서는 무리하게 재시도하지 말고
+해당 크롤러를 `enabled: false`로 두거나 정상적인 접근 경로를 준비한 뒤 다시 켜세요.
+
 아카라이브가 Cloudflare 챌린지로 403을 반환하는 환경에서는 V1.5 또는 실험용 Scrapling 크롤러를 사용할 수 있습니다. V1.5는 `curl_cffi`로 Chrome TLS fingerprint를 흉내내며, 브라우저를 띄우는 V2보다 가볍습니다.
 
 ```yaml

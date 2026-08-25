@@ -49,6 +49,7 @@ crawlers:
     crawler_name: QuasarzoneCrawler
     description: 퀘이서존 지름/할인정보 게시판
     enabled: true
+    # 403/429 발생 시 5분 → 30분 → 2시간 → 12시간 순으로 자동 백오프합니다.
   arcalive_hotdeal:
     url_list:
     - https://arca.live/b/hotdeal
