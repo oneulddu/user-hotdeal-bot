@@ -7,6 +7,7 @@ services:
       target: crawler
     container_name: user-hotdeal-bot-crawler
     restart: unless-stopped
+    stop_grace_period: 2m
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./log:/app/log

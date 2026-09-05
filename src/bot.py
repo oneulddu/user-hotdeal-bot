@@ -11,6 +11,19 @@ from src.crawler.base_crawler import BaseArticle
 from src.util import escape_markdown
 
 MessageType = TypeVar("MessageType")
+QueueItem = tuple[Literal["send", "edit", "delete"], BaseArticle]
+
+
+class _BotQueue(asyncio.Queue[QueueItem]):
+    """Queue with a non-destructive snapshot and constant-time cancellation recovery."""
+
+    def snapshot(self) -> list[QueueItem]:
+        return list(self._queue)
+
+    def restore_in_flight(self, item: QueueItem) -> None:
+        # The item was already counted by put(); it is still unfinished.
+        self._queue.appendleft(item)
+        self._wakeup_next(self._getters)
 
 
 def message_serializer(obj: Any) -> Any:
@@ -43,7 +56,7 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
         self.config = kwargs
         self.logger = logging.getLogger(f"bot.{self.__class__.__name__}")
         self.cache: dict[str, dict[int, MessageType]] = dict()
-        self.queue: asyncio.Queue[tuple[Literal["send", "edit", "delete"], BaseArticle]] = asyncio.Queue()
+        self.queue = _BotQueue()
         self.is_running = True
         self.consumer_task: asyncio.Task | None = asyncio.create_task(self.consumer())
 
@@ -121,6 +134,7 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
                             await self._delete(item[1])
                 except Exception as e:
                     self.logger.exception(e)
+                self.queue.task_done()
                 item = None
         except asyncio.CancelledError:
             # 작업이 취소됐다면 남아있는 아이템을 큐에 다시 넣어준 다음 consumer task 종료.
@@ -129,17 +143,8 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
                 self._requeue_front(item)
             return
 
-    def _requeue_front(self, item: tuple[Literal["send", "edit", "delete"], BaseArticle]) -> None:
-        pending_items = []
-        while True:
-            try:
-                pending_items.append(self.queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-
-        self.queue.put_nowait(item)
-        for pending_item in pending_items:
-            self.queue.put_nowait(pending_item)
+    def _requeue_front(self, item: QueueItem) -> None:
+        self.queue.restore_in_flight(item)
 
     async def run_consumer(self):
         """Consumer 작업 생성해 시작"""
@@ -258,14 +263,11 @@ class BaseBot(Generic[MessageType], metaclass=ABCMeta):
 
     async def to_dict(self) -> SerializedBotData:
         """메시지 목록 및 작업 큐 직렬화. 만약 메시지 객체의 직렬화 및 역직렬화가 불가능하다면 value가 비어있는 딕셔너리를 반환하도록 오버라이드 할 것."""
-        # WARNING: This method consumes all objects in queue.
-        # Must call after consumer task is stopped.
+        # Pause in-flight work before taking a snapshot. The manager resumes
+        # consumers after a live dump; pending work remains in its original order.
         await self.stop_consumer()
-        _queue = []
-        while not self.queue.empty():
-            _queue.append(await self.queue.get())
         return {
-            "queue": _queue,
+            "queue": self.queue.snapshot(),
             "cache": self.cache,
         }
 

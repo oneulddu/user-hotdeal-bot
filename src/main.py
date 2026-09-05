@@ -512,18 +512,26 @@ class BotManager:
             bots = {}
         await self.init_bots(bots)
 
-    async def dump(self, dump_file_path: str = "dump.json"):
+    async def dump(self, dump_file_path: str = "dump.json", *, resume_consumers: bool = True):
         """데이터를 지정한 경로의 json 파일에 저장
 
         Args:
             dump_file_path (str, optional): 데이터 파일 경로, 기본값은 "dump.json"
         """
-        await self.persistence.dump_data(
-            self.article_cache,
-            self.bots,
-            dump_file_path,
-            self.article_tombstones,
-        )
+        running_bots = [bot_instance for bot_instance in self.bots.values() if bot_instance.is_running]
+        saved = False
+        try:
+            await self.persistence.dump_data(
+                self.article_cache,
+                self.bots,
+                dump_file_path,
+                self.article_tombstones,
+            )
+            saved = True
+        finally:
+            if not self.closed and (resume_consumers or not saved):
+                for bot_instance in running_bots:
+                    await bot_instance.check_consumer(no_warning=True)
 
     async def _crawling(self, name: str, cwr: crawler.BaseCrawler) -> CrawlingResult:
         """크롤러 객체를 받아 크롤링 수행, 이후 새로운 게시글, 업데이트된 게시글, 삭제된 게시글을 각각 반환
@@ -758,13 +766,16 @@ class BotManager:
 
     async def _run(self):
         """실제 크롤링 및 메시지 전송을 1회 수행, 예외 처리 포함"""
+        if self.closed:
+            return
         if self._run_lock.locked():
             self.logger.warning("Previous crawling cycle is still running; skipping this cycle")
             logfire.warn("Crawling cycle skipped because previous cycle is still running")
             return
 
         async with self._run_lock:
-            await self._run_locked()
+            if not self.closed:
+                await self._run_locked()
 
     async def _run_locked(self):
         """잠금 안에서 한 번의 크롤링 주기를 수행."""
@@ -804,6 +815,11 @@ class BotManager:
     @logfire.instrument("close_application")
     async def close(self):
         """세션 닫기, 크롤러, 봇 닫기, 데이터 저장"""
+        # Finish the current cache/DB/notification cycle before closing anything.
+        async with self._run_lock:
+            await self._close_locked()
+
+    async def _close_locked(self):
         if self.closed:
             self.logger.info("session already closed")
             return
@@ -832,11 +848,17 @@ class BotManager:
 
     async def reload(self):
         """봇 재시작, 데이터 저장, config.yaml 파일 다시 읽어서 크롤러, 봇 초기화"""
-        self.logger.info("Reload start")
-        # 데이터 저장
-        await self.dump()
-        # config.yaml 파일 다시 읽어서 크롤러, 봇 초기화
-        await self.load_config()
+        async with self._run_lock:
+            if self.closed:
+                return
+            self.logger.info("Reload start")
+            await self.dump(resume_consumers=False)
+            try:
+                await self.load_config()
+            finally:
+                # Only bots retained by the new configuration may resume.
+                for bot_instance in self.bots.values():
+                    await bot_instance.check_consumer(no_warning=True)
 
 
 async def shutdown(sig: signal.Signals, bot: BotManager):

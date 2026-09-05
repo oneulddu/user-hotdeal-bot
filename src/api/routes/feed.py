@@ -1,6 +1,10 @@
 """RSS Feed routes."""
 
+import asyncio
 import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Literal
 
 from fastapi import APIRouter, Query, Response
 from feedgen.feed import FeedGenerator
@@ -13,7 +17,36 @@ router = APIRouter(prefix="/feed", tags=["feed"])
 FEED_CACHE_TTL_SECONDS = 60
 FEED_CACHE_CONTROL = "public, max-age=60"
 FEED_CACHE_MAX_SIZE = 128
-_feed_cache: dict[tuple[str, str | None, str | None, int], tuple[float, bytes]] = {}
+FeedFormat = Literal["rss", "atom"]
+FeedCacheKey = tuple[FeedFormat, str | None, str | None, int]
+_feed_cache: dict[FeedCacheKey, tuple[float, bytes]] = {}
+
+
+@dataclass
+class _FeedLock:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
+_feed_locks: dict[FeedCacheKey, _FeedLock] = {}
+
+
+@asynccontextmanager
+async def _lock_feed(cache_key: FeedCacheKey):
+    entry = _feed_locks.get(cache_key)
+    if entry is None:
+        entry = _FeedLock()
+        _feed_locks[cache_key] = entry
+    # Count both the owner and waiting requests before yielding control.
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0:
+            # Explicit cleanup also handles exceptions retaining tracebacks.
+            _feed_locks.pop(cache_key, None)
 
 
 def _prune_feed_cache(now: float) -> None:
@@ -26,7 +59,7 @@ def _prune_feed_cache(now: float) -> None:
         _feed_cache.pop(oldest_key, None)
 
 
-def _get_cached_feed(cache_key: tuple[str, str | None, str | None, int]) -> bytes | None:
+def _get_cached_feed(cache_key: FeedCacheKey) -> bytes | None:
     cached = _feed_cache.get(cache_key)
     if cached is None:
         return None
@@ -38,7 +71,7 @@ def _get_cached_feed(cache_key: tuple[str, str | None, str | None, int]) -> byte
     return content
 
 
-def _set_cached_feed(cache_key: tuple[str, str | None, str | None, int], content: bytes) -> None:
+def _set_cached_feed(cache_key: FeedCacheKey, content: bytes) -> None:
     now = time.monotonic()
     _prune_feed_cache(now)
     _feed_cache[cache_key] = (now + FEED_CACHE_TTL_SECONDS, content)
@@ -73,23 +106,6 @@ def _feed_title(crawler: str | None, site: str | None) -> str:
     return title
 
 
-async def _list_feed_articles(
-    repo: ArticleRepo,
-    crawler: str | None,
-    site: str | None,
-    limit: int,
-) -> list[Article]:
-    articles, _ = await repo.list_articles(
-        crawler=crawler,
-        site=site,
-        is_end=False,
-        include_deleted=False,
-        limit=limit,
-        offset=0,
-    )
-    return articles
-
-
 def _fill_entry_common(fe, article: Article) -> None:
     fe.id(str(article.id))
     fe.title(article.title)
@@ -102,6 +118,39 @@ def _fill_entry_common(fe, article: Article) -> None:
         fe.category(term=article.category)
 
 
+async def _get_feed(
+    feed_format: FeedFormat, repo: ArticleRepo, crawler: str | None, site: str | None, limit: int
+) -> Response:
+    cache_key = (feed_format, crawler, site, limit)
+    media_type = f"application/{feed_format}+xml; charset=utf-8"
+    cached = _get_cached_feed(cache_key)
+    if cached is not None:
+        return _feed_response(cached, media_type)
+
+    async with _lock_feed(cache_key):
+        # Another request may have filled this key while we waited.
+        cached = _get_cached_feed(cache_key)
+        if cached is not None:
+            return _feed_response(cached, media_type)
+
+        articles = await repo.list_feed_articles(crawler=crawler, site=site, limit=limit)
+        fg = _create_feed_generator(_feed_title(crawler, site))
+        if feed_format == "atom":
+            fg.id("https://t.me/hotdeal_kr")
+        for article in articles:
+            fe = fg.add_entry()
+            _fill_entry_common(fe, article)
+            description = f"[{article.category}] {article.title}"
+            if feed_format == "rss":
+                fe.description(description)
+            else:
+                fe.content(description, type="text")
+
+        content = fg.rss_str(pretty=True) if feed_format == "rss" else fg.atom_str(pretty=True)
+        _set_cached_feed(cache_key, content)
+        return _feed_response(content, media_type)
+
+
 @router.get("/rss.xml", response_class=Response)
 async def get_rss_feed(
     _auth: AuthResult,
@@ -111,23 +160,7 @@ async def get_rss_feed(
     limit: int = Query(50, ge=1, le=100, description="Number of items in feed"),
 ) -> Response:
     """Get RSS 2.0 feed of hot deals."""
-    cache_key = ("rss", crawler, site, limit)
-    if cached_feed := _get_cached_feed(cache_key):
-        return _feed_response(cached_feed, "application/rss+xml; charset=utf-8")
-
-    articles = await _list_feed_articles(repo, crawler, site, limit)
-    fg = _create_feed_generator(_feed_title(crawler, site))
-
-    for article in articles:
-        fe = fg.add_entry()
-        _fill_entry_common(fe, article)
-        fe.description(f"[{article.category}] {article.title}")
-
-    # Generate RSS XML
-    rss_xml = fg.rss_str(pretty=True)
-    _set_cached_feed(cache_key, rss_xml)
-
-    return _feed_response(rss_xml, "application/rss+xml; charset=utf-8")
+    return await _get_feed("rss", repo, crawler, site, limit)
 
 
 @router.get("/atom.xml", response_class=Response)
@@ -139,21 +172,4 @@ async def get_atom_feed(
     limit: int = Query(50, ge=1, le=100, description="Number of items in feed"),
 ) -> Response:
     """Get Atom feed of hot deals."""
-    cache_key = ("atom", crawler, site, limit)
-    if cached_feed := _get_cached_feed(cache_key):
-        return _feed_response(cached_feed, "application/atom+xml; charset=utf-8")
-
-    articles = await _list_feed_articles(repo, crawler, site, limit)
-    fg = _create_feed_generator(_feed_title(crawler, site))
-    fg.id("https://t.me/hotdeal_kr")
-
-    for article in articles:
-        fe = fg.add_entry()
-        _fill_entry_common(fe, article)
-        fe.content(f"[{article.category}] {article.title}", type="text")
-
-    # Generate Atom XML
-    atom_xml = fg.atom_str(pretty=True)
-    _set_cached_feed(cache_key, atom_xml)
-
-    return _feed_response(atom_xml, "application/atom+xml; charset=utf-8")
+    return await _get_feed("atom", repo, crawler, site, limit)
