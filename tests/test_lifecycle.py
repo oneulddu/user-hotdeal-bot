@@ -135,6 +135,7 @@ async def test_close_finishes_crawling_before_closing_sessions_and_dumping(tmp_p
 @pytest.mark.asyncio
 async def test_reload_waits_for_active_cycle(monkeypatch):
     manager = make_manager(None)
+    manager.bots = {}
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -157,3 +158,95 @@ async def test_reload_waits_for_active_cycle(monkeypatch):
     await asyncio.wait_for(asyncio.gather(cycle, reload_task), timeout=2)
     dump.assert_awaited_once()
     load.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disable", [False, True])
+async def test_reload_does_not_resume_bot_before_disabling_or_replacing_it(tmp_path, monkeypatch, disable):
+    monkeypatch.chdir(tmp_path)
+
+    class DestinationBot(LifecycleBot):
+        def __init__(self, name, target):
+            super().__init__(name)
+            self.config = {"target": target}
+
+    monkeypatch.setattr(bot, "DestinationBot", DestinationBot, raising=False)
+    instance = DestinationBot("dummy", "old-target")
+    manager = make_manager(instance)
+
+    class SlowClosingCrawler:
+        cls_name = "SlowClosingCrawler"
+
+        async def close(self):
+            instance.release.set()
+            # Releasing the event would allow a prematurely resumed consumer to send.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+    manager.crawlers = {"old": SlowClosingCrawler()}
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "crawlers": {},
+                "bots": {
+                    "dummy": {
+                        "bot_name": "DestinationBot",
+                        "kwargs": {"target": "new-target"},
+                        "enabled": not disable,
+                    }
+                },
+            }
+        )
+    )
+    try:
+        await instance.send(make_article(1))
+        await asyncio.wait_for(instance.started.wait(), timeout=2)
+        await instance.edit(make_article(1))
+        await manager.reload()
+        assert instance.operations == []
+        assert instance.consumer_task.done()
+        if disable:
+            assert manager.bots == {}
+        else:
+            assert manager.bots["dummy"] is not instance
+            assert manager.bots["dummy"].config == {"target": "new-target"}
+    finally:
+        await instance.close()
+        for current in manager.bots.values():
+            await current.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_saves_pending_notifications_when_scrapling_deadline_expires(tmp_path, monkeypatch):
+    from tests.test_crawler_config import FakeScraplingSession
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("src.main.close_db", AsyncMock())
+    fetching = asyncio.Event()
+
+    class RetryingSession(FakeScraplingSession):
+        async def fetch(self, *args, **kwargs):
+            fetching.set()
+            await asyncio.Event().wait()
+
+    instance = LifecycleBot("dummy")
+    manager = make_manager(instance)
+    browser_session = RetryingSession()
+    cwr = crawler.ArcaLiveCrawlerV2("dummy", ["https://example.com"], scrapling_session=browser_session)
+    monkeypatch.setattr(cwr, "SCRAPLING_TOTAL_TIMEOUT_SECONDS", 0.05)
+    manager.crawlers = {"dummy": cwr}
+    await instance.send(make_article(1))
+    await asyncio.wait_for(instance.started.wait(), timeout=2)
+    cycle = manager._schedule_crawling_task(asyncio.get_running_loop())
+    await asyncio.wait_for(fetching.wait(), timeout=2)
+    try:
+        await asyncio.wait_for(manager.close(), timeout=1)
+        await cycle
+        data = json.loads((tmp_path / "dump.json").read_text())
+        assert data["crawler"]["dummy"]["1"]["article_id"] == 1
+        assert [job[0] for job in data["bot"]["dummy"]["queue"]] == ["send"]
+        assert browser_session.closed
+        assert cwr.session.closed
+    finally:
+        await instance.close()
+        await cwr.close()

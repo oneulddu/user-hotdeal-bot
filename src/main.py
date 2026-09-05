@@ -512,13 +512,14 @@ class BotManager:
             bots = {}
         await self.init_bots(bots)
 
-    async def dump(self, dump_file_path: str = "dump.json"):
+    async def dump(self, dump_file_path: str = "dump.json", *, resume_consumers: bool = True):
         """데이터를 지정한 경로의 json 파일에 저장
 
         Args:
             dump_file_path (str, optional): 데이터 파일 경로, 기본값은 "dump.json"
         """
         running_bots = [bot_instance for bot_instance in self.bots.values() if bot_instance.is_running]
+        saved = False
         try:
             await self.persistence.dump_data(
                 self.article_cache,
@@ -526,8 +527,9 @@ class BotManager:
                 dump_file_path,
                 self.article_tombstones,
             )
+            saved = True
         finally:
-            if not self.closed:
+            if not self.closed and (resume_consumers or not saved):
                 for bot_instance in running_bots:
                     await bot_instance.check_consumer(no_warning=True)
 
@@ -850,8 +852,13 @@ class BotManager:
             if self.closed:
                 return
             self.logger.info("Reload start")
-            await self.dump()
-            await self.load_config()
+            await self.dump(resume_consumers=False)
+            try:
+                await self.load_config()
+            finally:
+                # Only bots retained by the new configuration may resume.
+                for bot_instance in self.bots.values():
+                    await bot_instance.check_consumer(no_warning=True)
 
 
 async def shutdown(sig: signal.Signals, bot: BotManager):

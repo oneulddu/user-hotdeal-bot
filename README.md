@@ -303,7 +303,8 @@ aws s3 cp s3://<bucket>/<prefix>/<file>.sql.gz - | gunzip | mysql -h <host> -u <
 설정 재로드와 종료는 진행 중인 크롤링·DB 저장·알림 큐 등록이 끝난 뒤 수행합니다.
 덤프를 저장할 때 대기 알림 큐를 유지하며, 재로드나 덤프 저장 실패 후에는 소비 작업을 재개합니다.
 Docker Compose 예제의 크롤러 종료 유예시간(`stop_grace_period`)은 2분입니다.
-요청 타임아웃을 늘리거나 Scrapling으로 여러 URL을 순차 처리한다면 최장 크롤링 시간에 맞춰 유예시간도 늘리세요.
+Scrapling은 브라우저 초기화·페이지 대기·재시도를 포함한 요청 전체를 기본 100초로 제한합니다.
+`ARCALIVE_SCRAPLING_TOTAL_TIMEOUT`(초)을 늘린다면 종료 유예시간도 전체 요청 상한과 정리·저장 시간을 고려해 늘리세요.
 단독 Docker 실행에서도 `docker stop --timeout 120 <컨테이너명>`처럼 충분한 종료 시간을 지정하세요.
 
 성능 개선 내용과 재현 가능한 검증 결과는 [성능 검토 기록](PERFORMANCE.md)에 정리했습니다.
