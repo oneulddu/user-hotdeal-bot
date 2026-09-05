@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from weakref import WeakKeyDictionary
+from weakref import WeakValueDictionary
 
 import yaml
 from sqlalchemy.engine import make_url
@@ -19,7 +19,9 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 
 # Cached configs by path
 _config_cache: dict[str, dict[str, Any]] = {}
-_session_maker_cache: WeakKeyDictionary[AsyncEngine, async_sessionmaker[AsyncSession]] = WeakKeyDictionary()
+# A factory binds its engine strongly. Weak values allow both to be collected
+# once callers release the factory; weak engine keys alone would retain both.
+_session_maker_cache: WeakValueDictionary[AsyncEngine, async_sessionmaker[AsyncSession]] = WeakValueDictionary()
 
 
 def _load_config(config_path: str = "config.yaml") -> dict[str, Any]:
@@ -168,15 +170,17 @@ def get_async_session_maker(engine: AsyncEngine) -> async_sessionmaker[AsyncSess
     Returns:
         async_sessionmaker instance
     """
-    if engine not in _session_maker_cache:
-        _session_maker_cache[engine] = async_sessionmaker(
+    session_maker = _session_maker_cache.get(engine)
+    if session_maker is None:
+        session_maker = async_sessionmaker(
             bind=engine,
             class_=AsyncSession,
             expire_on_commit=False,
             autocommit=False,
             autoflush=False,
         )
-    return _session_maker_cache[engine]
+        _session_maker_cache[engine] = session_maker
+    return session_maker
 
 
 @asynccontextmanager
@@ -184,7 +188,7 @@ async def get_async_session(engine: AsyncEngine | None = None) -> AsyncGenerator
     """Context manager for async database sessions.
 
     Args:
-        engine: AsyncEngine instance. If None, creates a new engine.
+        engine: AsyncEngine instance. If None, uses the global engine.
 
     Yields:
         AsyncSession instance
@@ -195,7 +199,7 @@ async def get_async_session(engine: AsyncEngine | None = None) -> AsyncGenerator
             articles = result.scalars().all()
     """
     if engine is None:
-        engine = get_async_engine()
+        engine = get_engine()
 
     session_maker = get_async_session_maker(engine)
     async with session_maker() as session:

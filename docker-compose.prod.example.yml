@@ -42,6 +42,7 @@ services:
     image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
     container_name: hotdeal-crawler
     restart: unless-stopped
+    stop_grace_period: 2m
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./log:/app/log

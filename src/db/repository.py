@@ -25,6 +25,22 @@ def _is_mysql_session(session: AsyncSession) -> bool:
 class ArticleRepository:
     """Repository for Article CRUD operations."""
 
+    # Leave room for defaults and conflict-update parameters under SQLite's
+    # legacy 999-variable limit. Larger MySQL batches remain bounded as well.
+    SQLITE_UPSERT_BATCH_SIZE = 50
+    MYSQL_UPSERT_BATCH_SIZE = 500
+    DELETE_BATCH_SIZE = 500
+    UPDATE_FIELDS = (
+        "title",
+        "category",
+        "site_name",
+        "board_name",
+        "writer_name",
+        "url",
+        "is_end",
+        "extra",
+    )
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -75,39 +91,19 @@ class ArticleRepository:
             return 0
 
         now = utc_now()
-        if _is_mysql_session(self.session):
-            stmt = mysql_insert(Article).values(articles)
-            stmt = stmt.on_duplicate_key_update(
-                title=stmt.inserted.title,
-                category=stmt.inserted.category,
-                site_name=stmt.inserted.site_name,
-                board_name=stmt.inserted.board_name,
-                writer_name=stmt.inserted.writer_name,
-                url=stmt.inserted.url,
-                is_end=stmt.inserted.is_end,
-                extra=stmt.inserted.extra,
-                updated_at=now,
-                deleted_at=None,
-            )
-        else:
-            stmt = sqlite_insert(Article).values(articles)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["crawler_name", "article_id"],
-                set_={
-                    "title": stmt.excluded.title,
-                    "category": stmt.excluded.category,
-                    "site_name": stmt.excluded.site_name,
-                    "board_name": stmt.excluded.board_name,
-                    "writer_name": stmt.excluded.writer_name,
-                    "url": stmt.excluded.url,
-                    "is_end": stmt.excluded.is_end,
-                    "extra": stmt.excluded.extra,
-                    "updated_at": now,
-                    "deleted_at": None,
-                },
-            )
-
-        await self.session.execute(stmt)
+        is_mysql = _is_mysql_session(self.session)
+        insert = mysql_insert if is_mysql else sqlite_insert
+        batch_size = self.MYSQL_UPSERT_BATCH_SIZE if is_mysql else self.SQLITE_UPSERT_BATCH_SIZE
+        for start in range(0, len(articles), batch_size):
+            stmt = insert(Article).values(articles[start : start + batch_size])
+            incoming = stmt.inserted if is_mysql else stmt.excluded
+            updates = {field: getattr(incoming, field) for field in self.UPDATE_FIELDS}
+            updates.update(updated_at=now, deleted_at=None)
+            if is_mysql:
+                stmt = stmt.on_duplicate_key_update(**updates)
+            else:
+                stmt = stmt.on_conflict_do_update(index_elements=["crawler_name", "article_id"], set_=updates)
+            await self.session.execute(stmt)
         await self.session.flush()
 
         return len(articles)
@@ -166,35 +162,9 @@ class ArticleRepository:
         Returns:
             Tuple of (articles list, total count)
         """
-        query = select(Article)
-        count_query = select(func.count(Article.id))
-
-        # Apply filters
-        if after is not None:
-            query = query.where(Article.id > after)
-            count_query = count_query.where(Article.id > after)
-
-        if crawler is not None:
-            query = query.where(Article.crawler_name == crawler)
-            count_query = count_query.where(Article.crawler_name == crawler)
-
-        if site is not None:
-            query = query.where(Article.site_name == site)
-            count_query = count_query.where(Article.site_name == site)
-
-        if is_end is not None:
-            query = query.where(Article.is_end == is_end)
-            count_query = count_query.where(Article.is_end == is_end)
-
-        if not include_deleted:
-            query = query.where(Article.deleted_at.is_(None))
-            count_query = count_query.where(Article.deleted_at.is_(None))
-
-        # Order by ID desc (newest first)
-        query = query.order_by(Article.id.desc())
-
-        # Pagination
-        query = query.offset(offset).limit(limit)
+        filters = self._article_filters(after, crawler, site, is_end, include_deleted)
+        query = select(Article).where(*filters).order_by(Article.id.desc()).offset(offset).limit(limit)
+        count_query = select(func.count(Article.id)).where(*filters)
 
         # Execute queries
         result = await self.session.execute(query)
@@ -204,6 +174,40 @@ class ArticleRepository:
         total = count_result.scalar_one()
 
         return articles, total
+
+    @staticmethod
+    def _article_filters(
+        after: str | None = None,
+        crawler: str | None = None,
+        site: str | None = None,
+        is_end: bool | None = None,
+        include_deleted: bool = False,
+    ) -> list[ColumnElement[bool]]:
+        filters = []
+        if after is not None:
+            filters.append(Article.id > after)
+        if crawler is not None:
+            filters.append(Article.crawler_name == crawler)
+        if site is not None:
+            filters.append(Article.site_name == site)
+        if is_end is not None:
+            filters.append(Article.is_end == is_end)
+        if not include_deleted:
+            filters.append(Article.deleted_at.is_(None))
+        return filters
+
+    async def list_feed_articles(
+        self, crawler: str | None = None, site: str | None = None, limit: int = 50
+    ) -> list[Article]:
+        """Fetch the latest active deals without counting the entire result set."""
+        query = (
+            select(Article)
+            .where(*self._article_filters(crawler=crawler, site=site, is_end=False))
+            .order_by(Article.id.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 
     async def soft_delete(self, article_id: str) -> bool:
         """Soft delete an article by setting deleted_at.
@@ -252,16 +256,17 @@ class ArticleRepository:
         deleted_at = utc_now()
         deleted_count = 0
         for crawler_name, article_ids in grouped.items():
-            result = await self.session.execute(
-                update(Article)
-                .where(
-                    Article.crawler_name == crawler_name,
-                    Article.article_id.in_(article_ids),
-                    Article.deleted_at.is_(None),
+            for start in range(0, len(article_ids), self.DELETE_BATCH_SIZE):
+                result = await self.session.execute(
+                    update(Article)
+                    .where(
+                        Article.crawler_name == crawler_name,
+                        Article.article_id.in_(article_ids[start : start + self.DELETE_BATCH_SIZE]),
+                        Article.deleted_at.is_(None),
+                    )
+                    .values(deleted_at=deleted_at)
                 )
-                .values(deleted_at=deleted_at)
-            )
-            deleted_count += result.rowcount or 0
+                deleted_count += result.rowcount or 0
 
         await self.session.flush()
         return deleted_count

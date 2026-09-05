@@ -1,6 +1,7 @@
 # 아카라이브 핫딜 채널
 # https://arca.live/b/hotdeal
 # API 문서화되면 전환 예정
+import asyncio
 import datetime
 import os
 import re
@@ -160,6 +161,7 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
         )
         self._scrapling_session = scrapling_session
         self._scrapling_session_started = False
+        self._scrapling_session_lock = asyncio.Lock()
         self._scrapling_useragent = self._configured_useragent(request_headers or {})
 
     @staticmethod
@@ -195,6 +197,10 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             return default
 
     async def _ensure_scrapling_session(self) -> AsyncStealthySession:
+        async with self._scrapling_session_lock:
+            return await self._start_scrapling_session()
+
+    async def _start_scrapling_session(self) -> AsyncStealthySession:
         if self._scrapling_session is None:
             kwargs = {
                 "max_pages": 1,
@@ -217,7 +223,16 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             self._scrapling_session = AsyncStealthySession(**kwargs)
 
         if not self._scrapling_session_started:
-            await self._scrapling_session.start()
+            try:
+                await self._scrapling_session.start()
+            except BaseException:
+                failed_session = self._scrapling_session
+                self._scrapling_session = None
+                try:
+                    await failed_session.close()
+                except Exception as e:
+                    self.logger.warning("Failed to close partially started Scrapling session: %s", e)
+                raise
             self._scrapling_session_started = True
         return self._scrapling_session
 
@@ -262,16 +277,23 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             f.write(response.html_content)
 
     async def close(self):
-        if self._scrapling_session_started and self._scrapling_session is not None:
-            await self._scrapling_session.close()
-            self._scrapling_session_started = False
-        await super().close()
+        try:
+            async with self._scrapling_session_lock:
+                if self._scrapling_session_started and self._scrapling_session is not None:
+                    await self._scrapling_session.close()
+                    self._scrapling_session_started = False
+        finally:
+            await super().close()
 
 
 class ArcaLiveCrawlerV15(ArcaLiveCrawler):
     """curl_cffi-based ArcaLive crawler with Chrome TLS impersonation."""
 
     CURL_IMPERSONATE = "chrome124"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._curl_session: CurlAsyncSession | None = None
 
     def _curl_headers(self) -> dict[str, str]:
         return {key: value for key, value in self.request_headers.items() if key.lower() != "user-agent"}
@@ -301,18 +323,20 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
     async def request(self, url: str) -> str | None:
         self.logger.debug("Send curl_cffi request to %s", url)
         try:
-            async with CurlAsyncSession(
+            if self._curl_session is None:
+                # Reuse connections without carrying response cookies into the
+                # next request. Configured cookies remain request-specific.
+                self._curl_session = CurlAsyncSession(discard_cookies=True)
+            response = await self._curl_session.get(
+                url,
                 impersonate=os.getenv("ARCALIVE_CURL_IMPERSONATE", self.CURL_IMPERSONATE),
                 proxies=self._curl_proxies(),
                 timeout=self._env_int("ARCALIVE_CURL_TIMEOUT", 30),
                 verify=self._curl_verify(),
-            ) as session:
-                response = await session.get(
-                    url,
-                    headers=self._curl_headers(),
-                    cookies=self.request_cookies or None,
-                    allow_redirects=False,
-                )
+                headers=self._curl_headers(),
+                cookies=self.request_cookies or None,
+                allow_redirects=False,
+            )
         except Exception as e:
             self.logger.error("curl_cffi request failed: %s (%s)", e, url)
             return None
@@ -328,6 +352,14 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
 
         self._prev_status = response.status_code
         return response.text
+
+    async def close(self):
+        try:
+            if self._curl_session is not None:
+                await self._curl_session.close()
+                self._curl_session = None
+        finally:
+            await super().close()
 
     async def dump_curl_response(self, response) -> None:
         current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -50,6 +50,9 @@ class FakeCurlSession:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
+    async def close(self):
+        return None
+
     async def get(self, url, **kwargs):
         self.get_url = url
         self.get_kwargs = kwargs
@@ -442,13 +445,14 @@ async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
 
     assert html == FakeCurlResponse.text
     session = created_sessions[0]
-    assert session.kwargs["impersonate"] == "chrome124"
-    assert session.kwargs["proxies"] == {
+    assert session.kwargs["discard_cookies"] is True
+    assert session.get_kwargs["impersonate"] == "chrome124"
+    assert session.get_kwargs["proxies"] == {
         "http": "http://127.0.0.1:8080",
         "https": "http://127.0.0.1:8080",
     }
-    assert session.kwargs["timeout"] == 12
-    assert session.kwargs["verify"] is True
+    assert session.get_kwargs["timeout"] == 12
+    assert session.get_kwargs["verify"] is True
     assert session.get_url == "https://arca.live/b/hotdeal"
     assert session.get_kwargs["headers"] == {
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
@@ -485,7 +489,7 @@ async def test_arcalive_v15_honors_ssl_options(monkeypatch):
     await no_verify_crawler.request("https://arca.live/b/hotdeal")
     await ca_crawler.request("https://arca.live/b/hotdeal")
 
-    assert created_sessions[0].kwargs["verify"] is False
-    assert created_sessions[1].kwargs["verify"] == "/path/to/ca-bundle.crt"
+    assert created_sessions[0].get_kwargs["verify"] is False
+    assert created_sessions[1].get_kwargs["verify"] == "/path/to/ca-bundle.crt"
     await no_verify_crawler.close()
     await ca_crawler.close()
