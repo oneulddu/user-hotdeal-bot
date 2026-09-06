@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from scrapling.fetchers import AsyncStealthySession
 
+from src.http_client import HttpClient
+
 from .base_crawler import BaseArticle, BaseCrawler
 
 
@@ -34,6 +36,8 @@ class ArcaLiveCrawler(BaseCrawler):
         request_headers: dict[str, str] | None = None,
         cookie: str | None = None,
         cookie_env: str | None = None,
+        *,
+        client: HttpClient | None = None,
     ) -> None:
         headers = {**self.DEFAULT_REQUEST_HEADERS, **(request_headers or {})}
         if url_list and "Referer" not in headers:
@@ -49,6 +53,7 @@ class ArcaLiveCrawler(BaseCrawler):
             request_headers=headers,
             cookie=cookie,
             cookie_env=cookie_env,
+            client=client,
         )
         self.config_request_headers = request_headers or {}
 
@@ -148,6 +153,8 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
         cookie: str | None = None,
         cookie_env: str | None = None,
         scrapling_session: AsyncStealthySession | None = None,
+        *,
+        client: HttpClient | None = None,
     ) -> None:
         super().__init__(
             name,
@@ -159,6 +166,7 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             request_headers=request_headers,
             cookie=cookie,
             cookie_env=cookie_env,
+            client=client,
         )
         self._scrapling_session = scrapling_session
         self._scrapling_session_started = False

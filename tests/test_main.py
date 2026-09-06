@@ -7,6 +7,7 @@ import pytest
 
 from src import crawler
 from src.bot import DummyBot
+from src.http_client import AiohttpClient
 from src.main import BotManager, PersistenceManager
 
 
@@ -269,7 +270,7 @@ async def test_init_crawlers_rebuilds_when_cookie_env_value_changes(monkeypatch)
     }
 
     async with aiohttp.ClientSession() as session:
-        manager.session = session
+        manager.http_client = AiohttpClient(session=session)
 
         monkeypatch.setenv("HOTDEAL_TEST_COOKIE", "foo=old")
         await manager.init_crawlers(crawler_config)
@@ -299,7 +300,7 @@ async def test_init_crawlers_closes_replaced_and_removed_crawlers(monkeypatch):
     }
 
     async with aiohttp.ClientSession() as session:
-        manager.session = session
+        manager.http_client = AiohttpClient(session=session)
 
         await manager.init_crawlers(crawler_config)
         first_crawler = manager.crawlers["tracked"]
@@ -335,7 +336,7 @@ async def test_close_closes_manager_owned_shared_session(monkeypatch):
     manager.bots = {}
 
     session = aiohttp.ClientSession()
-    manager.session = session
+    manager.http_client = AiohttpClient(session=session)
     tracking_crawler = CloseTrackingCrawler("tracked", ["https://example.com"], session=session)
     manager.crawlers = {"tracked": tracking_crawler}
 
@@ -366,7 +367,7 @@ async def test_close_continues_when_crawler_close_fails(monkeypatch):
     manager.bots = {}
 
     session = aiohttp.ClientSession()
-    manager.session = session
+    manager.http_client = AiohttpClient(session=session)
     broken_crawler = BrokenCloseCrawler("broken", ["https://example.com"], session=session)
     manager.crawlers = {"broken": broken_crawler}
 

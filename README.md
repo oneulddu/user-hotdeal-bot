@@ -157,11 +157,24 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 | `logging` | [`logging.config.dictConfig`](https://docs.python.org/ko/3/howto/logging-cookbook.html#customizing-handlers-with-dictconfig) 형식의 로깅 설정 |
 | `logfire` | [Logfire](https://logfire.pydantic.dev/) 원격 로깅 설정 (기본 `enabled: false`) |
 
+일반 크롤러는 공유 `curl_cffi` 클라이언트와 Cloudflare DoH를 사용하며, 연결 풀 대기를 포함해
+각 HTTP 시도의 전체 시간을 20초로 제한합니다. 크롤러별 `proxy`, `ssl_verify`, `ssl_ca_cert`,
+`headers`, `cookie`/`cookie_env` 설정을 요청마다 적용하고 응답 쿠키는 다음 요청에 승계하지 않습니다.
+전송 실패는 최대 2회 시도하며, 아래의 Quasarzone 응답 대기 정책도 유지합니다.
+
+코드에서 `client=AiohttpClient(...)`를 주입하면 aiohttp와 Cloudflare DNS를 사용할 수 있습니다.
+기존 `session=aiohttp.ClientSession(...)` 주입도 지원하며 이 세션은 호출자가 종료합니다.
+직접 만든 HTTP 클라이언트는 크롤러가, `BotManager`에 전달한 공유 클라이언트는 관리자가 종료합니다.
+문자 인코딩은 응답의 charset을 따르고 EUC-KR은 CP949로 읽습니다. charset이 없으면 기본 UTF-8을
+사용하며, 주입한 aiohttp 세션의 별도 charset resolver는 유지합니다.
+
 Quasarzone 크롤러는 HTTP 403/429가 반복될 때 5분, 30분, 2시간, 12시간 순으로
 요청 간격을 늘립니다. 접근이 계속 차단되는 서버에서는 무리하게 재시도하지 말고
 해당 크롤러를 `enabled: false`로 두거나 정상적인 접근 경로를 준비한 뒤 다시 켜세요.
 
-아카라이브가 Cloudflare 챌린지로 403을 반환하는 환경에서는 V1.5 또는 실험용 Scrapling 크롤러를 사용할 수 있습니다. V1.5는 `curl_cffi`로 Chrome TLS fingerprint를 흉내내며, 브라우저를 띄우는 V2보다 가볍습니다.
+아카라이브의 기본 크롤러도 공유 `curl_cffi` 클라이언트를 사용합니다. V1.5는 전용 curl 세션과
+기존 `ARCALIVE_CURL_*` 설정을 유지하며, V2는 브라우저를 사용하는 실험용 Scrapling 크롤러입니다.
+V1.5와 V2의 전용 요청 경로에는 위의 공유 HTTP 클라이언트 설정 대신 각 구현의 시간 제한과 DNS 동작이 적용됩니다.
 
 ```yaml
 crawlers:
