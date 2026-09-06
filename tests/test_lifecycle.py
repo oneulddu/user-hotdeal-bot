@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from src import bot, crawler
+from src.http_client import AiohttpClient
 from src.main import BotManager
 from tests.test_main import make_article
 
@@ -106,7 +107,7 @@ async def test_close_finishes_crawling_before_closing_sessions_and_dumping(tmp_p
             self.closed = True
 
     async with aiohttp.ClientSession() as session:
-        manager.session = session
+        manager.http_client = AiohttpClient(session=session)
         instance_crawler = DelayedCrawler()
         instance_crawler.session = session
         manager.crawlers = {"dummy": instance_crawler}
@@ -246,7 +247,7 @@ async def test_shutdown_saves_pending_notifications_when_scrapling_deadline_expi
         assert data["crawler"]["dummy"]["1"]["article_id"] == 1
         assert [job[0] for job in data["bot"]["dummy"]["queue"]] == ["send"]
         assert browser_session.closed
-        assert cwr.session.closed
+        assert cwr.client.closed
     finally:
         await instance.close()
         await cwr.close()

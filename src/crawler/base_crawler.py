@@ -3,7 +3,6 @@ import datetime
 import logging
 import math
 import os
-import ssl
 import time
 from abc import ABCMeta, abstractmethod
 from email.utils import parsedate_to_datetime
@@ -12,6 +11,15 @@ from typing import Any, Self, TypedDict
 
 import aiohttp
 import logfire
+
+from src.http_client import (
+    AiohttpClient,
+    HttpClient,
+    HttpClientError,
+    HttpResponse,
+    HttpTimeoutError,
+    create_default_http_client,
+)
 
 MAX_ERROR_DUMPS = 50
 MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
@@ -113,9 +121,21 @@ class BaseCrawler(metaclass=ABCMeta):
         request_headers: dict[str, str] | None = None,
         cookie: str | None = None,
         cookie_env: str | None = None,
+        *,
+        client: HttpClient | None = None,
     ) -> None:
-        self._owns_session = session is None
-        self.session: aiohttp.ClientSession = session if session is not None else aiohttp.ClientSession(trust_env=True)
+        if session is not None and client is not None:
+            raise ValueError("Pass either session or client, not both")
+        self._owns_client = client is None
+        self.client = (
+            client
+            if client is not None
+            else (
+                AiohttpClient(session=session, owns_session=False)
+                if session is not None
+                else create_default_http_client()
+            )
+        )
         self.url_list: list[str] = url_list
         self.cls_name = self.__class__.__name__
         self.name = name
@@ -133,16 +153,6 @@ class BaseCrawler(metaclass=ABCMeta):
         self._response_backoff_failures: dict[str, int] = {}
         self._response_backoff_until: dict[str, float] = {}
         self._response_backoff_locks: dict[str, asyncio.Lock] = {}
-
-        # SSL 컨텍스트 설정
-        self._ssl_context: ssl.SSLContext | bool | None = None
-        if not ssl_verify:
-            # SSL 검증 완전 비활성화
-            self._ssl_context = False
-        elif ssl_ca_cert:
-            # 커스텀 CA 인증서 사용
-            self._ssl_context = ssl.create_default_context(cafile=ssl_ca_cert)
-        # ssl_verify=True이고 ssl_ca_cert=None이면 기본 시스템 CA 사용 (None)
 
     @staticmethod
     def resolve_cookie(cookie: str | None, cookie_env: str | None) -> str:
@@ -195,39 +205,27 @@ class BaseCrawler(metaclass=ABCMeta):
 
             return data
 
-    async def _request(self, url: str) -> aiohttp.ClientResponse | None:
-        """aiohttp를 사용하여 주어진 URL에 HTTP GET 요청을 보내고 응답을 반환
-
-        Args:
-            url (str): 요청할 URL
-            retry (bool, optional): 재시도 여부
-
-        Returns:
-            aiohttp.ClientResponse | None: 응답 객체 (실패한 경우 None 반환)
-        """
+    async def _request(self, url: str) -> HttpResponse | None:
+        """Forward crawler-specific settings through the shared HTTP transport."""
         self.logger.debug("Send request to %s", url)
         request_kwargs: dict[str, Any] = {"allow_redirects": False}
         if self.proxy is not None:
             request_kwargs["proxy"] = self.proxy
-        if self._ssl_context is not None:
-            request_kwargs["ssl"] = self._ssl_context
+        if not self.ssl_verify:
+            request_kwargs["verify"] = False
+        elif self.ssl_ca_cert:
+            request_kwargs["verify"] = self.ssl_ca_cert
         if self.request_headers:
             request_kwargs["headers"] = self.request_headers
         if self.request_cookies:
             request_kwargs["cookies"] = self.request_cookies
         try:
-            resp = await self.session.get(url, **request_kwargs)
-        except aiohttp.ServerTimeoutError as e:
-            self.logger.error("Client connection timeout error: %s (%s)", e, url)
-            return
-        except aiohttp.ClientError as e:
-            self.logger.error("Client connection error: %s (%s)", e, url)
-            return
-        except asyncio.TimeoutError as e:
-            # ServerTimeoutError 하고 이게 뭐가 다른거지?
-            self.logger.error("Asyncio timeout error: %s (%s)", e, url)
-            return
-        return resp
+            return await self.client.get(url, **request_kwargs)
+        except HttpTimeoutError as e:
+            self.logger.error("HTTP request timeout error: %s (%s)", e, url)
+        except HttpClientError as e:
+            self.logger.error("HTTP client error: %s (%s)", e, url)
+        return None
 
     async def request(self, url: str) -> str | None:
         """주어진 URL로부터 HTML 문자열을 반환
@@ -259,33 +257,24 @@ class BaseCrawler(metaclass=ABCMeta):
             self.logger.error("Client connection failed: %s", url)
             return
 
-        async with resp:
-            if resp.status != 200:
-                self._schedule_response_backoff(url, resp.status, resp.headers)
-                if resp.status != self._prev_status:
-                    self.logger.error("Client response error: %s (%s)", resp.status, url)
-                    await self.dump_http_response(resp)
-                else:
-                    self.logger.info("Client response error [skip]: %s (%s)", resp.status, url)
-                self._prev_status = resp.status
-                return
-            else:
-                self._prev_status = resp.status
-                self._clear_response_backoff(url)
-
-            try:
-                await resp.read()
-                if (encoding := resp.get_encoding()) in ("euc-kr", "euc_kr"):
-                    encoding = "cp949"
-                html = await resp.text(encoding=encoding)
-            except aiohttp.ClientConnectionError as e:
-                self.logger.error("Connection error: %s", e)
-                return
-            except Exception as e:
+        if resp.status != 200:
+            self._schedule_response_backoff(url, resp.status, resp.headers)
+            if resp.status != self._prev_status:
+                self.logger.error("Client response error: %s (%s)", resp.status, url)
                 await self.dump_http_response(resp)
-                self.logger.error("Cannot get response html string: %s", e)
-                return
-        return html
+            else:
+                self.logger.info("Client response error [skip]: %s (%s)", resp.status, url)
+            self._prev_status = resp.status
+            return
+        self._prev_status = resp.status
+        self._clear_response_backoff(url)
+
+        try:
+            return resp.text()
+        except (LookupError, UnicodeDecodeError) as e:
+            await self.dump_http_response(resp)
+            self.logger.error("Cannot decode response body: %s", e)
+            return None
 
     def _schedule_response_backoff(self, url: str, status: int, headers) -> None:
         if status not in self.RESPONSE_BACKOFF_STATUS_CODES or not self.RESPONSE_BACKOFF_DELAYS_SECONDS:
@@ -328,14 +317,14 @@ class BaseCrawler(metaclass=ABCMeta):
 
     async def close(self):
         """세션 종료"""
-        if self._owns_session and not self.session.closed:
-            await self.session.close()
+        if self._owns_client and not self.client.closed:
+            await self.client.close()
 
-    async def dump_http_response(self, resp: aiohttp.ClientResponse) -> None:
+    async def dump_http_response(self, resp: HttpResponse) -> None:
         """HTTP 응답을 error/ 폴더에 'YYYYMMDD_HHMMSS_{crawler_name}.html' 형식으로 저장
 
         Args:
-            resp (aiohttp.ClientResponse): aiohttp ClientResponse 객체
+            resp (HttpResponse): 공통 HTTP 응답 객체
         """
         current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = os.path.join("error", f"{current_datetime}_{self.name}.html")
@@ -344,7 +333,7 @@ class BaseCrawler(metaclass=ABCMeta):
             os.makedirs("error")
 
         with open(filename, "wb") as f:
-            f.write(await resp.read())
+            f.write(resp.body)
             self.logger.debug("Dumped response binary to %s", filename)
 
         dumps = sorted(

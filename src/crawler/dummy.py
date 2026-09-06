@@ -2,6 +2,8 @@ import random
 
 import aiohttp
 
+from src.http_client import HttpClient
+
 from .base_crawler import ArticleCollection, BaseArticle, BaseCrawler
 
 
@@ -17,6 +19,8 @@ class DummyCrawler(BaseCrawler):
         request_headers: dict[str, str] | None = None,
         cookie: str | None = None,
         cookie_env: str | None = None,
+        *,
+        client: HttpClient | None = None,
     ) -> None:
         super().__init__(
             name,
@@ -28,6 +32,7 @@ class DummyCrawler(BaseCrawler):
             request_headers=request_headers,
             cookie=cookie,
             cookie_env=cookie_env,
+            client=client,
         )
         self.start = 1
         self.dummy_data = {i: self._generate_article_object(i) for i in range(self.start, self.start + 10)}

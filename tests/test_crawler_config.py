@@ -92,11 +92,16 @@ class ConcurrentCrawler(crawler.BaseCrawler):
 
 
 class FakeDumpResponse:
-    async def read(self) -> bytes:
-        return b"<html>error</html>"
+    body = b"<html>error</html>"
 
 
 class FakeHTTPResponse:
+    charset = "utf-8"
+    url = "https://example.com"
+
+    def release(self):
+        self.exited = True
+
     def __init__(self, status, body="", headers=None):
         self.status = status
         self.body = body
@@ -473,7 +478,6 @@ async def test_arcalive_v15_honors_ssl_options(monkeypatch):
             created_sessions.append(self)
 
     monkeypatch.setattr(crawler.arcalive, "CurlAsyncSession", RecordingCurlSession)
-    monkeypatch.setattr(base_crawler.ssl, "create_default_context", lambda cafile: object())
 
     no_verify_crawler = crawler.ArcaLiveCrawlerV15(
         "arcalive_hotdeal_v15",

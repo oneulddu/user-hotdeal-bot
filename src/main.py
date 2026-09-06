@@ -8,7 +8,6 @@ import sys
 import time
 from typing import Any, NotRequired, TypedDict
 
-import aiohttp
 import logfire
 import yaml
 
@@ -19,11 +18,8 @@ from src import (
     util,  # noqa: F401
 )
 from src.db import ArticleRepository, close_db, get_async_session, get_engine, get_timezone
+from src.http_client import HttpClient, create_default_http_client
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    # "User-Agent": f"user-hotdeal-bot/{__version__} (+https://github.com/krepe90/user-hotdeal-bot)"
-}
 MAX_ARTICLE_TOMBSTONES = 4_096
 
 
@@ -41,7 +37,8 @@ def load_config_file(config_path: str = "config.yaml") -> "Config":
 
 # 통합 설정 파일에서 로깅 설정 로드
 _config: "Config" = load_config_file()
-if "logging" in _config:
+is_testing = os.environ.get("TESTING") == "1"
+if not is_testing and "logging" in _config:
     logging.config.dictConfig(_config["logging"])
 
 # 타임존 설정 (config.yaml > TZ 환경변수 > UTC)
@@ -51,25 +48,28 @@ if hasattr(time, "tzset"):
     time.tzset()
 
 # Logfire 설정
-logfire_config = _config.get("logfire", {})
-logfire_enabled = logfire_config.get("enabled", False)
-console_config = logfire_config.get("console", {})
+if is_testing:
+    logfire.configure(send_to_logfire=False, console=False)
+else:
+    logfire_config = _config.get("logfire", {})
+    logfire_enabled = logfire_config.get("enabled", False)
+    console_config = logfire_config.get("console", {})
 
-configure_options = {
-    "service_name": logfire_config.get("service_name", "user-hotdeal-bot"),
-    "service_version": __version__,
-    "send_to_logfire": logfire_enabled,
-    "environment": logfire_config.get("environment", "production"),
-}
-if not logfire_enabled:
-    configure_options["console"] = logfire.ConsoleOptions(
-        show_project_link=console_config.get("show_project_link", False)
-    )
-if "token" in logfire_config:
-    configure_options["token"] = logfire_config["token"]
-logfire.configure(**configure_options)
-logfire_handler = logfire.LogfireLoggingHandler()
-logging.getLogger().addHandler(logfire_handler)
+    configure_options = {
+        "service_name": logfire_config.get("service_name", "user-hotdeal-bot"),
+        "service_version": __version__,
+        "send_to_logfire": logfire_enabled,
+        "environment": logfire_config.get("environment", "production"),
+    }
+    if not logfire_enabled:
+        configure_options["console"] = logfire.ConsoleOptions(
+            show_project_link=console_config.get("show_project_link", False)
+        )
+    if "token" in logfire_config:
+        configure_options["token"] = logfire_config["token"]
+    logfire.configure(**configure_options)
+    logfire_handler = logfire.LogfireLoggingHandler()
+    logging.getLogger().addHandler(logfire_handler)
 logger_status = logging.getLogger("status")
 
 
@@ -332,7 +332,7 @@ class PersistenceManager:
 
 
 class BotManager:
-    def __init__(self):
+    def __init__(self, http_client: HttpClient | None = None):
         self.logger = logging.getLogger("BotManager")
         self.closed = False
         self.persistence = PersistenceManager()
@@ -340,15 +340,13 @@ class BotManager:
         self._db_backfilled_article_keys: set[tuple[str, int]] = set()
         self._run_lock = asyncio.Lock()
         self._bg_tasks: set[asyncio.Task[None]] = set()
+        self.http_client = http_client
 
     async def init_session(self):
         """세션 초기화"""
         self.logger.info("Initializing start")
-        timeout = aiohttp.ClientTimeout(total=20)
-        self.session = aiohttp.ClientSession(headers=HEADERS, trust_env=True, timeout=timeout)
-
-        # Logfire HTTP 인스트루멘테이션
-        logfire.instrument_aiohttp_client()
+        if self.http_client is None:
+            self.http_client = create_default_http_client()
 
         # DB 엔진 초기화 (테이블 생성은 Alembic 마이그레이션으로만 수행)
         self.db_engine = get_engine()
@@ -411,10 +409,12 @@ class BotManager:
                 self.logger.warning("Invalid crawler class: %s", crawler_cls_name)
                 continue
             # 크롤러 객체 생성
+            if self.http_client is None:
+                raise RuntimeError("HTTP client is not initialized")
             self.crawlers[crawler_name] = crawler_cls(
                 crawler_name,
                 crawler_config["url_list"],
-                self.session,
+                client=self.http_client,
                 proxy=crawler_config.get("proxy"),
                 ssl_verify=crawler_config.get("ssl_verify", True),
                 ssl_ca_cert=crawler_config.get("ssl_ca_cert"),
@@ -825,16 +825,15 @@ class BotManager:
             return
         self.closed = True
         self.logger.info("session close start")
-        # 크롤러 세션 닫기
+        # 크롤러가 직접 소유한 HTTP 클라이언트 닫기
         for k, cwr in self.crawlers.items():
             self.logger.debug("crawler close: %s", k)
-            if not cwr.session.closed:
-                try:
-                    await cwr.close()
-                except Exception as e:
-                    self.logger.warning("Crawler close failed: %s (%s)", k, e)
-        if (session := getattr(self, "session", None)) is not None and not session.closed:
-            await session.close()
+            try:
+                await cwr.close()
+            except Exception as e:
+                self.logger.warning("Crawler close failed: %s (%s)", k, e)
+        if self.http_client is not None and not self.http_client.closed:
+            await self.http_client.close()
         # 봇 세션 닫기
         for bot_name, bot_instance in self.bots.items():
             self.logger.debug("bot close: %s", bot_name)
