@@ -51,7 +51,7 @@ class FakeCurlSession:
         self.closed = False
         self.requests: list[tuple[str, bool]] = []
 
-    async def get(self, url: str, *, allow_redirects: bool) -> FakeCurlResponse:
+    async def get(self, url: str, *, allow_redirects: bool, **kwargs) -> FakeCurlResponse:
         self.requests.append((url, allow_redirects))
         return self.response
 

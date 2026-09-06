@@ -2,7 +2,10 @@ import asyncio
 import ssl
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
+from email.message import Message
 from typing import Any, Protocol
+from urllib.parse import urlsplit
+from urllib.request import getproxies, proxy_bypass
 
 import aiohttp
 from aiohttp.resolver import AsyncResolver
@@ -36,6 +39,10 @@ class HttpResponse:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "headers", CIMultiDictProxy(CIMultiDict(self.headers)))
+        if self.charset is None:
+            content_type = Message()
+            content_type["Content-Type"] = self.headers.get("Content-Type", "")
+            object.__setattr__(self, "charset", content_type.get_content_charset())
 
     def text(self) -> str:
         """응답 본문을 선언된 문자 인코딩으로 디코딩한다."""
@@ -189,20 +196,39 @@ class CurlCffiClient:
     ) -> None:
         self._closed = False
         self._timeout = timeout
+        self._trust_env = trust_env and getattr(session, "trust_env", True)
+        self._configured_proxies = dict(getattr(session, "proxies", {}))
         self._session_options = dict(
             impersonate=impersonate,
             trust_env=trust_env,
             timeout=timeout,
             discard_cookies=True,
-            curl_options={CurlOpt.DOH_URL: CLOUDFLARE_DOH_URL},
+            curl_options={CurlOpt.DOH_URL: CLOUDFLARE_DOH_URL, CurlOpt.NOPROXY: ""},
         )
         self._injected_session = session is not None
         self._session = session
         self._session_users: dict[AsyncSession, int] = {}
+        if session is not None:
+            # Resolve environment policy once per request below. libcurl must not
+            # independently bypass an explicitly configured proxy via NO_PROXY.
+            session.curl_options = {**getattr(session, "curl_options", {}), CurlOpt.NOPROXY: ""}
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def _proxy_for_url(self, url: str, proxy: str | None) -> str:
+        if proxy is not None:
+            return proxy
+        parts = urlsplit(url)
+        for key in (f"{parts.scheme}://{parts.hostname}", f"all://{parts.hostname}", parts.scheme, "all"):
+            configured = self._configured_proxies.get(key)
+            if configured is not None:
+                return configured
+        if self._trust_env and parts.hostname and not proxy_bypass(parts.hostname):
+            proxies = getproxies()
+            return proxies.get(parts.scheme, proxies.get("all", ""))
+        return ""
 
     async def get(
         self,
@@ -220,16 +246,19 @@ class CurlCffiClient:
             self._session = AsyncSession(**self._session_options)
         session = self._session
         self._session_users[session] = self._session_users.get(session, 0) + 1
-        options: dict[str, Any] = {"allow_redirects": allow_redirects}
-        if proxy is not None:
-            options["proxy"] = proxy
-        if verify is not True:
-            options["verify"] = verify
-        if headers:
-            options["headers"] = headers
-        if cookies:
-            options["cookies"] = cookies
         try:
+            options: dict[str, Any] = {
+                "allow_redirects": allow_redirects,
+                # A nonempty mapping with an empty proxy explicitly disables libcurl
+                # environment proxies; proxy='' alone is ignored by curl-cffi.
+                "proxies": {"all": self._proxy_for_url(url, proxy)},
+            }
+            if verify is not True:
+                options["verify"] = verify
+            if headers:
+                options["headers"] = headers
+            if cookies:
+                options["cookies"] = cookies
             # curl's native timeout excludes waiting for a free pool slot.
             async with asyncio.timeout(self._timeout):
                 response = await session.get(url, **options)
@@ -260,7 +289,6 @@ class CurlCffiClient:
             body=response.content,
             headers=response.headers,
             url=str(response.url),
-            charset=response.charset_encoding,
         )
 
     async def close(self) -> None:

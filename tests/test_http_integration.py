@@ -326,3 +326,83 @@ async def test_aiohttp_releases_native_response_on_read_failure(cancel):
     with pytest.raises(asyncio.CancelledError if cancel else HttpClientError):
         await client.get("https://example.com")
     assert response.released
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_type", [AiohttpClient, CurlCffiClient])
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        'text/html; charset="euc-kr"',
+        "text/html; Charset=EUC-KR",
+        'text/html; CHARSET="EUC_KR"',
+    ],
+)
+async def test_native_content_type_charset_variations(client_type, content_type):
+    async def handler(request):
+        return web.Response(body="한글 똠".encode("cp949"), headers={"Content-Type": content_type})
+
+    async with local_server(handler) as url:
+        client = client_type(trust_env=False)
+        instance = crawler.DummyCrawler("charset", [url], client=client)
+        try:
+            assert await instance.request(url) == "한글 똠"
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trust_env", [False, True])
+@pytest.mark.parametrize("no_proxy", ["", "127.0.0.1"])
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("env_name", ["http_proxy", "HTTP_PROXY"])
+async def test_curl_preserves_explicit_proxy_and_environment_precedence(
+    monkeypatch, trust_env, no_proxy, explicit, env_name
+):
+    for name in [
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "REQUEST_METHOD",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+    async def direct(request):
+        return web.Response(text="direct")
+
+    async def proxy(request):
+        return web.Response(text="proxy")
+
+    async with local_server(direct) as url, local_server(proxy) as proxy_url:
+        monkeypatch.setenv(env_name, proxy_url)
+        monkeypatch.setenv("NO_PROXY", no_proxy)
+        client = CurlCffiClient(trust_env=trust_env)
+        try:
+            response = await client.get(url, proxy=proxy_url if explicit else None)
+            expected = "proxy" if explicit or (trust_env and not no_proxy) else "direct"
+            assert response.text() == expected
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_curl_preserves_injected_session_proxy_over_no_proxy(monkeypatch):
+    async def direct(request):
+        return web.Response(text="direct")
+
+    async def proxy(request):
+        return web.Response(text="proxy")
+
+    async with local_server(direct) as url, local_server(proxy) as proxy_url:
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+        native = AsyncSession(proxy=proxy_url)
+        client = CurlCffiClient(session=native)
+        try:
+            assert (await client.get(url)).text() == "proxy"
+        finally:
+            await client.close()

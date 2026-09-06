@@ -161,10 +161,13 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 각 HTTP 시도의 전체 시간을 20초로 제한합니다. 크롤러별 `proxy`, `ssl_verify`, `ssl_ca_cert`,
 `headers`, `cookie`/`cookie_env` 설정을 요청마다 적용하고 응답 쿠키는 다음 요청에 승계하지 않습니다.
 전송 실패는 최대 2회 시도하며, 아래의 Quasarzone 응답 대기 정책도 유지합니다.
+명시한 프록시는 환경변수 `NO_PROXY`보다 우선합니다. 명시한 프록시가 없을 때 환경 프록시와
+`NO_PROXY`를 적용하며, `CurlCffiClient(trust_env=False)`는 환경 프록시를 사용하지 않습니다.
 
 코드에서 `client=AiohttpClient(...)`를 주입하면 aiohttp와 Cloudflare DNS를 사용할 수 있습니다.
 기존 `session=aiohttp.ClientSession(...)` 주입도 지원하며 이 세션은 호출자가 종료합니다.
-직접 만든 HTTP 클라이언트는 크롤러가, `BotManager`에 전달한 공유 클라이언트는 관리자가 종료합니다.
+크롤러가 내부에서 생성한 클라이언트는 해당 크롤러가 종료합니다. `client=`로 주입한 클라이언트는
+호출자가 종료하며, `BotManager`에 전달한 공유 클라이언트는 관리자가 종료합니다.
 문자 인코딩은 응답의 charset을 따르고 EUC-KR은 CP949로 읽습니다. charset이 없으면 기본 UTF-8을
 사용하며, 주입한 aiohttp 세션의 별도 charset resolver는 유지합니다.
 
