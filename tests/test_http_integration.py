@@ -353,11 +353,13 @@ async def test_native_content_type_charset_variations(client_type, content_type)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trust_env", [False, True])
-@pytest.mark.parametrize("no_proxy", ["", "127.0.0.1"])
+@pytest.mark.parametrize(
+    "no_proxy,bypass", [("", False), ("127.0.0.1", True), ("127.0.0.0/8", True), ("192.0.2.0/24", False)]
+)
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("env_name", ["http_proxy", "HTTP_PROXY"])
 async def test_curl_preserves_explicit_proxy_and_environment_precedence(
-    monkeypatch, trust_env, no_proxy, explicit, env_name
+    monkeypatch, trust_env, no_proxy, bypass, explicit, env_name
 ):
     for name in [
         "http_proxy",
@@ -384,7 +386,7 @@ async def test_curl_preserves_explicit_proxy_and_environment_precedence(
         client = CurlCffiClient(trust_env=trust_env)
         try:
             response = await client.get(url, proxy=proxy_url if explicit else None)
-            expected = "proxy" if explicit or (trust_env and not no_proxy) else "direct"
+            expected = "proxy" if explicit or (trust_env and not bypass) else "direct"
             assert response.text() == expected
         finally:
             await client.close()

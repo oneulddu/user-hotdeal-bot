@@ -3,6 +3,7 @@ import ssl
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from email.message import Message
+from ipaddress import ip_address, ip_network
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
@@ -225,10 +226,29 @@ class CurlCffiClient:
             configured = self._configured_proxies.get(key)
             if configured is not None:
                 return configured
-        if self._trust_env and parts.hostname and not proxy_bypass(parts.hostname):
+        if self._trust_env and parts.hostname:
             proxies = getproxies()
+            if proxy_bypass(parts.hostname) or self._cidr_bypass(parts.hostname, proxies.get("no", "")):
+                return ""
             return proxies.get(parts.scheme, proxies.get("all", ""))
         return ""
+
+    @staticmethod
+    def _cidr_bypass(host: str, no_proxy: str) -> bool:
+        # urllib handles host/domain patterns but not libcurl's CIDR exclusions.
+        try:
+            address = ip_address(host)
+        except ValueError:
+            return False
+        for entry in no_proxy.split(","):
+            if "/" not in entry:
+                continue
+            try:
+                if address in ip_network(entry.strip(), strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
 
     async def get(
         self,
