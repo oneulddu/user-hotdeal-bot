@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
@@ -326,3 +327,25 @@ async def test_cached_feed_still_requires_auth_and_applies_rate_limit():
     finally:
         app.dependency_overrides.pop(get_db_session, None)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", [None, "", "category"])
+@pytest.mark.parametrize("feed_format", ["rss", "atom"])
+async def test_feed_description_omits_empty_category(category, feed_format):
+    values = dict(make_article(1))
+    values["category"] = category
+    article = Article(
+        **values,
+        id="01HX0000000000000000000000",
+        created_at=datetime(2026, 6, 8, 12, 0),
+        updated_at=datetime(2026, 6, 8, 12, 0),
+    )
+    repo = AsyncMock()
+    repo.list_feed_articles.return_value = [article]
+
+    response = await feed._get_feed(feed_format, repo, crawler=None, site=None, limit=50)
+
+    root = ElementTree.fromstring(response.body)
+    path = "./channel/item/description" if feed_format == "rss" else "./{*}entry/{*}content"
+    assert root.findtext(path) == ("[category] Article 1" if category else "Article 1")

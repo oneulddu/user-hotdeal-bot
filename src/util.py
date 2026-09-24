@@ -5,7 +5,7 @@ from typing import Any
 
 
 def escape_markdown(s: str) -> str:
-    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", "\\\\\\1", s)
+    return re.sub(r"([\\_*\[\]()~`>#+\-=|{}.!])", "\\\\\\1", s)
 
 
 class TelegramHandler(logging.handlers.HTTPHandler):
@@ -38,7 +38,8 @@ class TelegramHandler(logging.handlers.HTTPHandler):
         if self.formatter is not None and record.exc_info:
             if not record.exc_text:
                 record.exc_text = self.formatter.formatException(record.exc_info)
-            escaped_text += "\n```\n" + record.exc_text + "\n```"
+            exc_text = record.exc_text.replace("\\", "\\\\").replace("`", "\\`")
+            escaped_text += "\n```\n" + exc_text + "\n```"
 
         return {
             "chat_id": self.target,

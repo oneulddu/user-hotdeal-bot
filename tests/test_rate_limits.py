@@ -1,7 +1,8 @@
+import asyncio
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from src.api.main import cleanup_rate_limit_records
 from src.datetime_utils import utc_now
@@ -203,3 +204,99 @@ async def test_api_cleanup_rate_limit_records_deletes_guest_and_api_rows(monkeyp
     assert deleted_count == 2
     assert list(guest_result.scalars()) == []
     assert list(api_result.scalars()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "repo_type, model, key",
+    [
+        (GuestRateLimitRepository, GuestRateLimit, "127.0.0.1"),
+        (ApiKeyRateLimitRepository, ApiKeyRateLimit, 1),
+    ],
+)
+async def test_new_rate_limit_key_starts_at_one(repo_type, model, key):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    try:
+        async with get_async_session(engine) as session:
+            assert await repo_type(session).check_and_increment(key, 2) is True
+            row = (await session.execute(select(model))).scalar_one()
+            assert row.request_count == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_type, key", [(GuestRateLimitRepository, "127.0.0.1"), (ApiKeyRateLimitRepository, 1)])
+async def test_rate_limit_hot_path_only_updates(repo_type, key):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    statements = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.strip().split()[0].upper())
+
+    try:
+        async with get_async_session(engine) as session:
+            repo = repo_type(session)
+            assert await repo.check_and_increment(key, 2) is True
+            event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+            assert await repo.check_and_increment(key, 2) is True
+            event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+            assert statements == ["UPDATE"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit, expected", [(1, [False, True]), (2, [True, True])])
+async def test_concurrent_first_requests_respect_limit(tmp_path, limit, expected):
+    engine = get_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rate_limits.db'}")
+    await init_db(engine)
+
+    async def request():
+        async with get_async_session(engine) as session:
+            return await GuestRateLimitRepository(session).check_and_increment("new", limit)
+
+    try:
+        assert sorted(await asyncio.gather(request(), request())) == expected
+        async with get_async_session(engine) as session:
+            row = (await session.execute(select(GuestRateLimit))).scalar_one()
+            assert row.request_count == limit
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_type, key", [(GuestRateLimitRepository, "127.0.0.1"), (ApiKeyRateLimitRepository, 1)])
+async def test_mysql_rate_limit_ensures_row_before_increment(monkeypatch, repo_type, key):
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    calls = []
+    try:
+        async with get_async_session(engine) as session:
+            repo = repo_type(session)
+            ensure_row = repo._ensure_row
+            increment = repo._increment_active_window
+            monkeypatch.setattr("src.db.repository._is_mysql_session", lambda session: True)
+
+            async def record_ensure(key, now):
+                calls.append("ensure")
+                # Execute the upsert using SQLite while testing MySQL ordering.
+                with monkeypatch.context() as patch:
+                    patch.setattr("src.db.repository._is_mysql_session", lambda session: False)
+                    await ensure_row(key, now)
+
+            async def record_increment(key, cutoff, limit):
+                calls.append("increment")
+                return await increment(key, cutoff, limit)
+
+            monkeypatch.setattr(repo, "_ensure_row", record_ensure)
+            monkeypatch.setattr(repo, "_increment_active_window", record_increment)
+            assert await repo.check_and_increment(key, 1) is True
+            assert calls == ["ensure", "increment"]
+            calls.clear()
+            assert await repo.check_and_increment(key, 1) is False
+            assert calls == ["ensure", "increment", "increment"]
+    finally:
+        await engine.dispose()

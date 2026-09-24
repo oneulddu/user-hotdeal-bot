@@ -1,9 +1,15 @@
 import asyncio
+import logging
+from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
+from telegram.error import RetryAfter
+from telegram.helpers import escape_markdown as telegram_escape_markdown
 
 from src import crawler
-from src.bot import BaseBot, TelegramBot
+from src.bot import BaseBot, TelegramBot, _retry_after_seconds
+from src.util import TelegramHandler, escape_markdown
 
 
 def make_article() -> crawler.BaseArticle:
@@ -127,3 +133,56 @@ async def test_consumer_requeues_in_flight_item_before_pending_items():
 async def _wait_until(predicate):
     while not predicate():
         await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("text", [r"a\b.c", "\\_*[]()~`>#+-=|{}.!"])
+def test_escape_markdown_matches_telegram(text):
+    assert escape_markdown(text) == telegram_escape_markdown(text, version=2)
+
+
+def test_telegram_handler_escapes_exception_pre_block_without_changing_cached_text():
+    handler = TelegramHandler("fake-token", "target", emoji=False)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    error = ValueError(r"bad \path `code`")
+    record = logging.LogRecord("test", logging.ERROR, __file__, 1, "failed", (), (ValueError, error, None))
+    original = handler.formatter.formatException(record.exc_info)
+    record.exc_text = original
+
+    mapped = handler.mapLogRecord(record)
+
+    expected = telegram_escape_markdown(original, version=2, entity_type="pre")
+    assert mapped["text"] == "failed\n```\n" + expected + "\n```"
+    assert record.exc_text == original
+
+
+@pytest.mark.parametrize("value", [2, 2.5, timedelta(seconds=2.5)])
+def test_retry_after_seconds(value):
+    assert _retry_after_seconds(value) == (2 if value == 2 else 2.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["send", "edit"])
+@pytest.mark.parametrize("use_timedelta", [False, True])
+async def test_telegram_retries_with_seconds(monkeypatch, operation, use_timedelta):
+    monkeypatch.setenv("PTB_TIMEDELTA", "true" if use_timedelta else "false")
+    retry = RetryAfter(timedelta(seconds=2))
+    sleep = AsyncMock()
+    monkeypatch.setattr("src.bot.asyncio.sleep", sleep)
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    message = FakeMessage()
+    call = AsyncMock(side_effect=[retry, message])
+    article = make_article()
+    try:
+        if operation == "send":
+            bot.bot = type("FakeClient", (), {"send_message": call})()
+            assert await bot._send(article) is message
+            assert await bot.get_msg_obj(article) is message
+        else:
+            message.edit_text = call
+            await bot.set_msg_obj(article, message)
+            await bot._edit(article)
+    finally:
+        await bot.close()
+
+    sleep.assert_awaited_once_with(2.0)
+    assert call.await_count == 2
