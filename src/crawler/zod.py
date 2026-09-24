@@ -1,5 +1,7 @@
 # zod 특가 게시판
 # https://zod.kr/deal
+from urllib.parse import urljoin, urlsplit
+
 from bs4 import BeautifulSoup
 
 from .base_crawler import BaseArticle, BaseCrawler
@@ -33,7 +35,6 @@ class ZodCrawler(BaseCrawler):
                 continue
 
             article_url = article_link.attrs.get("href", "")
-            article_id = int(article_url.split("/")[-1]) if article_url else 0
 
             if not article_url:
                 self.logger.error("Cannot find article url.")
@@ -43,6 +44,12 @@ class ZodCrawler(BaseCrawler):
             if "deal_partner" in article_url:
                 self.logger.debug("Skipping deal_partner article.")
                 continue
+
+            article_id_text = urlsplit(article_url).path.rstrip("/").rsplit("/", 1)[-1]
+            if not article_id_text.isascii() or not article_id_text.isdigit():
+                self.logger.warning("Cannot get article id")
+                continue
+            article_id = int(article_id_text)
 
             title_tag = article_link.select_one(".app-list-title-item")
             title = title_tag.text.strip() if title_tag else ""
@@ -77,8 +84,7 @@ class ZodCrawler(BaseCrawler):
 
             is_end = "종료" in title or "품절" in title or "zod-board-list--deal-ended" in row.get("class", [])
 
-            base_url = "https://zod.kr"
-            full_url = f"{base_url}{article_url}"
+            full_url = urljoin("https://zod.kr", article_url)
 
             data[article_id] = BaseArticle(
                 article_id=article_id,

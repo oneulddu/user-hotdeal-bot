@@ -108,7 +108,11 @@ class PpomppuRSSCrawler(BaseCrawler):
                 continue
             board_url: str = _re_url.group(1)
             _id: int = int(_re_url.group(2))
-            comments, view, recommend, not_recommend = _hits_tag.text.strip().strip("[]").split("|", 3)
+            hits = _hits_tag.text.strip().strip("[]").split("|", 3)
+            if len(hits) != 4:
+                self.logger.warning("Cannot get hits info: expected 4 fields")
+                continue
+            comments, view, recommend, not_recommend = hits
             data[_id] = {
                 "article_id": _id,
                 "title": _title_tag.text,

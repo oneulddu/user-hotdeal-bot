@@ -280,3 +280,121 @@ async def test_coolenjoy_cli_uses_rss_crawler(monkeypatch):
         "name": "coolenjoy_crawler",
         "url_list": ["https://coolenjoy.net/bbs/rss.php?bo_table=jirum"],
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "info",
+    ["", '<div class="hotdeal_info"><span>쇼핑몰:</span><span>가격:</span><span>배송:</span></div>'],
+)
+async def test_fmkorea_keeps_articles_with_missing_info(info):
+    html = f"""
+    <div class="bd_tl"><h1><a href="/hotdeal">핫딜</a></h1></div>
+    <div id="content"><div class="fm_best_widget"><ul><li>
+      <h3 class="title"><a href="/123">상품</a></h3>
+      {info}
+      <span class="category"><a>식품</a></span><span class="author"> / 작성자</span>
+    </li></ul></div></div>
+    """
+    instance = crawler.FmkoreaCrawler("fmkorea", [])
+    try:
+        data = await instance.parsing(html)
+    finally:
+        await instance.close()
+    assert data[123]["title"] == "상품"
+    assert data[123]["extra"] == {"recommend": "0", "comment": "0"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("href", ["/deal/123?page=1", "https://zod.kr/deal/123", "/deal/123/"])
+async def test_zod_parses_url_paths_and_skips_invalid_ids(href, caplog):
+    caplog.set_level("WARNING", logger="crawler")
+    html = f"""
+    <div class="app-board-title"><a href="/deal">특가</a></div>
+    <div id="board-list"><ul class="zod-board-list--deal">
+      <li><a href="/deal/invalid">잘못된 ID</a></li>
+      <li><a href="/">빈 경로</a></li>
+      <li><a href="/deal_partner/999">파트너</a></li>
+      <li><a href="{href}"><span class="app-list-title-item">상품</span></a></li>
+    </ul></div>
+    """
+    instance = crawler.ZodCrawler("zod", [])
+    try:
+        data = await instance.parsing(html)
+    finally:
+        await instance.close()
+    assert set(data) == {123}
+    assert data[123]["url"] == (href if href.startswith("https://") else "https://zod.kr" + href)
+    assert "Cannot get article id" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hits", [" ", "[1|2|3]"])
+async def test_ppomppu_rss_skips_only_rows_with_invalid_hits(hits, caplog):
+    caplog.set_level("WARNING", logger="crawler")
+    xml = f"""
+    <rss><channel><title>뽐뿌 - 뽐뿌게시판</title>
+      <item><title>잘못된 통계</title>
+        <link>https://www.ppomppu.co.kr/zboard/view.php?id=ppomppu&amp;no=123</link>
+        <author>작성자</author><hits>{hits}</hits>
+      </item>
+      <item><title>정상 상품</title>
+        <link>https://www.ppomppu.co.kr/zboard/view.php?id=ppomppu&amp;no=124</link>
+        <author>작성자</author><hits>[1|2|3|4]</hits>
+      </item>
+    </channel></rss>
+    """
+    instance = crawler.PpomppuRSSCrawler("ppomppu_rss", [])
+    try:
+        data = await instance.parsing(xml)
+    finally:
+        await instance.close()
+    assert set(data) == {124}
+    assert data[124]["extra"] == {"comments": "1", "view": "2", "recommend": "3", "not_recommend": "4"}
+    assert "Cannot get hits info" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_coolenjoy_rss_skips_deleted_posts():
+    xml = """
+    <rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>지름</title>
+      <item><title> 삭제된 글 </title><link>https://coolenjoy.net/bbs/jirum/123</link>
+        <dc:creator>작성자</dc:creator></item>
+      <item><title>상품</title><link>https://coolenjoy.net/bbs/jirum/124</link>
+        <dc:creator>작성자</dc:creator></item>
+    </channel></rss>
+    """
+    instance = crawler.CoolenjoyRSSCrawler("coolenjoy", [])
+    try:
+        data = await instance.parsing(xml)
+    finally:
+        await instance.close()
+    assert set(data) == {124}
+    assert data[124]["title"] == "상품"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["get", "output"])
+async def test_crawler_cli_closes_after_failure(monkeypatch, failure):
+    closed = []
+
+    class FakeCrawler:
+        def __init__(self, *args):
+            pass
+
+        async def get(self):
+            if failure == "get":
+                raise RuntimeError("get failed")
+            return {123: {"category": "", "title": "상품", "writer_name": "작성자", "url": "", "is_end": False}}
+
+        async def close(self):
+            closed.append(True)
+
+    def fail_output(*args, **kwargs):
+        raise RuntimeError("output failed")
+
+    monkeypatch.setattr(crawler_cli.crawler, "CoolenjoyRSSCrawler", FakeCrawler)
+    monkeypatch.setattr(crawler_cli.typer, "echo", fail_output)
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        await crawler_cli.main("coolenjoy")
+    assert closed == [True]

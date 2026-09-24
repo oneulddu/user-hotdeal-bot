@@ -197,15 +197,18 @@ class QuasarzoneCrawler(BaseCrawler):
             if "category" in e.attrs.get("class", []):
                 # 카테고리 태그 - PC/하드웨어
                 data["category"] = e.text.strip()
-            elif e.find(string=True, recursive=False).strip() == "가격":
-                # 가격 태그 - ￦ 121,687 (KRW)
-                data["price"] = e.find("span").text.strip()
             elif "brand" in e.attrs.get("class", []):
                 # TODO 쇼핑몰 아이콘으로 이름 가져오기
                 continue
-            elif e.find(string=True, recursive=False).strip() == "직배":
+            elif (direct_text := e.find(string=True, recursive=False)) is None:
+                continue
+            elif direct_text.strip() == "가격":
+                # 가격 태그 - ￦ 121,687 (KRW)
+                if (price := e.find("span")) is not None:
+                    data["price"] = price.text.strip()
+            elif direct_text.strip() == "직배":
                 # 해외 배송 직배 가능 여부 태그 - 가능 / 불가능
-                data["direct_delivery"] = True if "가능" in e.text else False
+                data["direct_delivery"] = e.text.partition("직배")[2].strip() == "가능"
             elif "배송비" in e.text.strip():
                 # 배송비 태그 - 배송비 {텍스트}
                 data["delivery"] = e.text.replace("배송비", "").strip()
