@@ -70,14 +70,18 @@ class FmkoreaCrawler(BaseCrawler):
             }
         return data
 
-    def info_tag_parser(self, el: BeautifulSoup) -> dict[str, str]:
+    def info_tag_parser(self, el: BeautifulSoup | None) -> dict[str, str]:
         # div.hotdeal_info 받아서 쇼핑몰/가격/배송 데이터 처리해 반환
         data = {}
+        if el is None:
+            return data
         for e in el.select("span"):
+            if (value := e.find("a")) is None:
+                continue
             if "쇼핑몰" in e.text:
-                data["brand"] = e.find("a").text.strip()
+                data["brand"] = value.text.strip()
             elif "가격" in e.text:
-                data["price"] = e.find("a").text.strip()
+                data["price"] = value.text.strip()
             elif "배송" in e.text:
-                data["delivery"] = e.find("a").text.strip()
+                data["delivery"] = value.text.strip()
         return data

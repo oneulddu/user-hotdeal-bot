@@ -108,3 +108,31 @@ async def test_quasarzone_excludes_partner_row_with_complete_metadata():
         assert set(await instance.parsing(str(soup))) == {123}
     finally:
         await instance.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    ['<span class="brand"><img alt="쇼핑몰"></span>', "<span></span>", "<span>가격</span>"],
+)
+async def test_quasarzone_tolerates_missing_metadata_text(metadata):
+    html = make_page("legacy", TITLE).replace('<span class="category">', metadata + '<span class="category">')
+    instance = QuasarzoneCrawler("quasarzone", [])
+    try:
+        data = await instance.parsing(html)
+    finally:
+        await instance.close()
+    assert data[123]["extra"]["price"] == "￦9,900"
+    assert data[123]["category"] == "생활/식품"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,expected", [("가능", True), ("불가능", False)])
+async def test_quasarzone_direct_delivery_requires_exact_status(status, expected):
+    html = make_page("legacy", TITLE).replace("</p>", f"<span>직배 <span> {status} </span></span></p>")
+    instance = QuasarzoneCrawler("quasarzone", [])
+    try:
+        data = await instance.parsing(html)
+    finally:
+        await instance.close()
+    assert data[123]["extra"]["direct_delivery"] is expected

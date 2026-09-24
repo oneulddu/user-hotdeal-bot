@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
@@ -497,3 +498,22 @@ async def test_arcalive_v15_honors_ssl_options(monkeypatch):
     assert created_sessions[1].get_kwargs["verify"] == "/path/to/ca-bundle.crt"
     await no_verify_crawler.close()
     await ca_crawler.close()
+
+
+@pytest.mark.asyncio
+async def test_error_dump_is_deduplicated_per_url_across_get_calls(monkeypatch):
+    class FetchingCrawler(crawler.BaseCrawler):
+        async def parsing(self, html):
+            return {}
+
+    urls = ["https://example.com/failing", "https://example.com/success"]
+    session = FakeHTTPSession([FakeHTTPResponse(status, body="ok") for status in (500, 200, 500, 200)])
+    crawler_instance = FetchingCrawler("test", urls, session=session)
+    dump = AsyncMock()
+    monkeypatch.setattr(crawler_instance, "dump_http_response", dump)
+
+    await crawler_instance.get()
+    await crawler_instance.get()
+
+    assert session.calls == 4
+    dump.assert_awaited_once()

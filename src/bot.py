@@ -2,6 +2,7 @@ import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
+from datetime import timedelta
 from typing import Any, Generic, Literal, TypedDict, TypeVar
 
 import logfire
@@ -12,6 +13,10 @@ from src.util import escape_markdown
 
 MessageType = TypeVar("MessageType")
 QueueItem = tuple[Literal["send", "edit", "delete"], BaseArticle]
+
+
+def _retry_after_seconds(value: int | float | timedelta) -> float:
+    return value.total_seconds() if isinstance(value, timedelta) else float(value)
 
 
 class _BotQueue(asyncio.Queue[QueueItem]):
@@ -338,16 +343,17 @@ class TelegramBot(BaseBot[telegram.Message]):
                     article_title=data.get("title", ""),
                 )
             except telegram.error.RetryAfter as e:
+                retry_after = _retry_after_seconds(e.retry_after)
                 self.logger.warning(
                     "Retry send message after %s secs: (%s): %s (%s) -> %s",
-                    e.retry_after,
+                    retry_after,
                     e,
                     data["title"],
                     data["url"],
                     self.target,
                 )
-                logfire.warn("Rate limited, retrying", retry_after=e.retry_after, target=self.target)
-                await asyncio.sleep(e.retry_after)
+                logfire.warn("Rate limited, retrying", retry_after=retry_after, target=self.target)
+                await asyncio.sleep(retry_after)
                 msg = await self._send(data)
             except telegram.error.TimedOut as e:
                 self.logger.error(
@@ -378,15 +384,16 @@ class TelegramBot(BaseBot[telegram.Message]):
             kwargs = self._make_message(data)
             await msg.edit_text(**kwargs)
         except telegram.error.RetryAfter as e:
+            retry_after = _retry_after_seconds(e.retry_after)
             self.logger.warning(
                 "Retry edit message after %s secs: (%s): %s (%s) <- %s",
-                e.retry_after,
+                retry_after,
                 e,
                 data["title"],
                 data["url"],
                 msg.message_id,
             )
-            await asyncio.sleep(e.retry_after)
+            await asyncio.sleep(retry_after)
             await self._edit(data)
         except telegram.error.TimedOut as e:
             self.logger.error("Edit message timeout (%s): %s (%s) <- %s", e, data["title"], data["url"], msg.message_id)

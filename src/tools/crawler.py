@@ -61,37 +61,38 @@ async def main(module_name: str, detail: bool = False):
     else:
         raise ValueError(f"Unknown module name: {module_name}")
 
-    data: crawler.ArticleCollection = await crawler_instance.get()
-    # print each article using typer with style
-    for article_id, article_dict in data.items():
-        # print as table with style
-        # each row includes article_id, title, category, writer_name
-        # if is_end is True, strikethough the title
-        if detail:
-            typer.echo(
-                typer.style(
-                    (
-                        f"{article_id:<10} [{article_dict['category']}] {article_dict['title']} - {article_dict['writer_name']}"
-                        f"\n            {article_dict['url']}"
-                        f"\n            {article_dict['extra']}"
-                    ),
-                    bold=False,
-                    dim=article_dict["is_end"],
+    try:
+        data: crawler.ArticleCollection = await crawler_instance.get()
+        # print each article using typer with style
+        for article_id, article_dict in data.items():
+            # print as table with style
+            # each row includes article_id, title, category, writer_name
+            # if is_end is True, strikethough the title
+            if detail:
+                typer.echo(
+                    typer.style(
+                        (
+                            f"{article_id:<10} [{article_dict['category']}] {article_dict['title']} - {article_dict['writer_name']}"
+                            f"\n            {article_dict['url']}"
+                            f"\n            {article_dict['extra']}"
+                        ),
+                        bold=False,
+                        dim=article_dict["is_end"],
+                    )
                 )
-            )
-        else:
-            typer.echo(
-                typer.style(
-                    (
-                        f"{article_id:<10} [{article_dict['category']}] {article_dict['title']} - {article_dict['writer_name']}"
-                        f"\n            {article_dict['url']}"
-                    ),
-                    bold=False,
-                    dim=article_dict["is_end"],
+            else:
+                typer.echo(
+                    typer.style(
+                        (
+                            f"{article_id:<10} [{article_dict['category']}] {article_dict['title']} - {article_dict['writer_name']}"
+                            f"\n            {article_dict['url']}"
+                        ),
+                        bold=False,
+                        dim=article_dict["is_end"],
+                    )
                 )
-            )
-
-    await crawler_instance.close()
+    finally:
+        await crawler_instance.close()
 
 
 def run(module_name: str, detail: bool = False):

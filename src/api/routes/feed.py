@@ -140,7 +140,7 @@ async def _get_feed(
         for article in articles:
             fe = fg.add_entry()
             _fill_entry_common(fe, article)
-            description = f"[{article.category}] {article.title}"
+            description = f"[{article.category}] {article.title}" if article.category else article.title
             if feed_format == "rss":
                 fe.description(description)
             else:

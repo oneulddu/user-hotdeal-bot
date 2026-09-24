@@ -281,15 +281,15 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             return None
 
         if response.status != 200:
-            if response.status != self._prev_status:
+            if response.status != self._prev_status_by_url.get(url, 200):
                 self.logger.error("Scrapling response error: %s (%s)", response.status, url)
                 await self.dump_scrapling_response(response)
             else:
                 self.logger.info("Scrapling response error [skip]: %s (%s)", response.status, url)
-            self._prev_status = response.status
+            self._prev_status_by_url[url] = response.status
             return None
 
-        self._prev_status = response.status
+        self._prev_status_by_url[url] = response.status
         return response.html_content
 
     async def dump_scrapling_response(self, response) -> None:
@@ -387,15 +387,15 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
                         await session.close()
 
         if response.status_code != 200:
-            if response.status_code != self._prev_status:
+            if response.status_code != self._prev_status_by_url.get(url, 200):
                 self.logger.error("curl_cffi response error: %s (%s)", response.status_code, url)
                 await self.dump_curl_response(response)
             else:
                 self.logger.info("curl_cffi response error [skip]: %s (%s)", response.status_code, url)
-            self._prev_status = response.status_code
+            self._prev_status_by_url[url] = response.status_code
             return None
 
-        self._prev_status = response.status_code
+        self._prev_status_by_url[url] = response.status_code
         return response.text
 
     async def close(self):

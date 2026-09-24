@@ -149,7 +149,7 @@ class BaseCrawler(metaclass=ABCMeta):
         self.cookie = self.resolve_cookie(cookie, cookie_env)
         self.request_cookies = self._parse_cookie_header(self.cookie)
         self.logger = logging.getLogger(f"crawler.{self.__class__.__name__}")
-        self._prev_status = 200
+        self._prev_status_by_url: dict[str, int] = {}
         self._response_backoff_failures: dict[str, int] = {}
         self._response_backoff_until: dict[str, float] = {}
         self._response_backoff_locks: dict[str, asyncio.Lock] = {}
@@ -259,14 +259,14 @@ class BaseCrawler(metaclass=ABCMeta):
 
         if resp.status != 200:
             self._schedule_response_backoff(url, resp.status, resp.headers)
-            if resp.status != self._prev_status:
+            if resp.status != self._prev_status_by_url.get(url, 200):
                 self.logger.error("Client response error: %s (%s)", resp.status, url)
                 await self.dump_http_response(resp)
             else:
                 self.logger.info("Client response error [skip]: %s (%s)", resp.status, url)
-            self._prev_status = resp.status
+            self._prev_status_by_url[url] = resp.status
             return
-        self._prev_status = resp.status
+        self._prev_status_by_url[url] = resp.status
         self._clear_response_backoff(url)
 
         try:

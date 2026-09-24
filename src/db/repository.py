@@ -417,8 +417,10 @@ class _WindowRateLimitRepository:
     async def _check_and_increment_key(self, key: str | int, limit_per_minute: int) -> bool:
         now = utc_now()
         cutoff = now - timedelta(minutes=1)
-
-        await self._ensure_row(key, now)
+        is_mysql = _is_mysql_session(self.session)
+        if is_mysql:
+            # Upsert first to avoid InnoDB gap-lock deadlocks on missing keys.
+            await self._ensure_row(key, now)
 
         if await self._increment_active_window(key, cutoff, limit_per_minute):
             await self.session.flush()
@@ -428,8 +430,10 @@ class _WindowRateLimitRepository:
             await self.session.flush()
             return True
 
-        # Another request may have reset the expired window between the first
-        # increment attempt and our reset attempt. Try the fresh window once.
+        # Create missing rows without overwriting concurrent requests, then retry
+        # the increment in case another request created or reset the window.
+        if not is_mysql:
+            await self._ensure_row(key, now)
         allowed = await self._increment_active_window(key, cutoff, limit_per_minute)
         await self.session.flush()
         return allowed
