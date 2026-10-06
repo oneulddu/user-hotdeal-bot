@@ -287,7 +287,11 @@ class BaseCrawler(metaclass=ABCMeta):
                 resp is None or resp.status == 403 or (resp.status == 200 and self._is_challenge(resp))
             ):
                 self.logger.info("Direct request failed; trying configured proxy (%s)", url)
-                resp = await self._request_attempts(url, self.proxy, 1)
+                proxy_response = await self._request_attempts(url, self.proxy, 1)
+                # A failed proxy connection must not erase the direct block's
+                # backoff policy or Retry-After header.
+                if proxy_response is not None:
+                    resp = proxy_response
                 use_proxy = True
                 switched_to_proxy = True
         else:

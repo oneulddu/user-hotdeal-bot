@@ -244,8 +244,9 @@ async def test_cancellation_does_not_trigger_failover():
 
 
 @pytest.mark.asyncio
-async def test_quasarzone_backoff_applies_after_fallback_is_exhausted(monkeypatch):
-    client = ScriptedClient(response(403), response(403))
+@pytest.mark.parametrize("proxy_response", [response(403), HttpClientError("proxy offline")])
+async def test_quasarzone_backoff_applies_after_fallback_is_exhausted(monkeypatch, proxy_response):
+    client = ScriptedClient(response(403), proxy_response)
     instance = QuasarzoneCrawler("test", [], client=client, proxy="http://proxy")
     monkeypatch.setattr(instance, "dump_http_response", AsyncMock())
     url = "https://example.com"
@@ -254,6 +255,22 @@ async def test_quasarzone_backoff_applies_after_fallback_is_exhausted(monkeypatc
     assert client.calls == ["", "http://proxy"]
     assert instance._response_backoff_failures[url] == 1
     assert 299 < instance._response_backoff_until[url] - base_crawler.time.monotonic() <= 300
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,headers", [(403, {}), (200, {"cf-mitigated": "challenge"})])
+async def test_failed_proxy_connection_preserves_direct_retry_after(monkeypatch, status, headers):
+    client = ScriptedClient(
+        response(status, headers={**headers, "Retry-After": "600"}), HttpClientError("proxy offline")
+    )
+    instance = QuasarzoneCrawler("test", [], client=client, proxy="http://proxy")
+    monkeypatch.setattr(instance, "dump_http_response", AsyncMock())
+    url = "https://example.com"
+    assert await instance.request(url) is None
+    assert await instance.request(url) is None
+    assert client.calls == ["", "http://proxy"]
+    assert instance._response_backoff_failures[url] == 1
+    assert 599 < instance._response_backoff_until[url] - base_crawler.time.monotonic() <= 600
 
 
 @pytest.mark.asyncio
