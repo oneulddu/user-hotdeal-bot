@@ -8,6 +8,7 @@ from abc import ABCMeta, abstractmethod
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from typing import Any, Self, TypedDict
+from urllib.parse import urlsplit
 
 import aiohttp
 import logfire
@@ -107,6 +108,9 @@ class ArticleCollection(dict[int, BaseArticle]):
 
 
 class BaseCrawler(metaclass=ABCMeta):
+    DEFAULT_PROXY_MODE = "fallback"
+    PROXY_COOLDOWN_SECONDS = 20 * 60
+    TRANSPORT_ATTEMPTS = 2
     RESPONSE_BACKOFF_STATUS_CODES: frozenset[int] = frozenset()
     RESPONSE_BACKOFF_DELAYS_SECONDS: tuple[int, ...] = ()
 
@@ -123,7 +127,11 @@ class BaseCrawler(metaclass=ABCMeta):
         cookie_env: str | None = None,
         *,
         client: HttpClient | None = None,
+        proxy_mode: str | None = None,
     ) -> None:
+        self.proxy_mode = self.DEFAULT_PROXY_MODE if proxy_mode is None else proxy_mode
+        if self.proxy_mode not in {"fallback", "always"}:
+            raise ValueError("proxy_mode must be 'fallback' or 'always'")
         if session is not None and client is not None:
             raise ValueError("Pass either session or client, not both")
         self._owns_client = client is None
@@ -153,6 +161,8 @@ class BaseCrawler(metaclass=ABCMeta):
         self._response_backoff_failures: dict[str, int] = {}
         self._response_backoff_until: dict[str, float] = {}
         self._response_backoff_locks: dict[str, asyncio.Lock] = {}
+        self._proxy_until: dict[str, float] = {}
+        self._proxy_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def resolve_cookie(cookie: str | None, cookie_env: str | None) -> str:
@@ -205,12 +215,12 @@ class BaseCrawler(metaclass=ABCMeta):
 
             return data
 
-    async def _request(self, url: str) -> HttpResponse | None:
+    async def _request(self, url: str, *, proxy: str | None = None) -> HttpResponse | None:
         """Forward crawler-specific settings through the shared HTTP transport."""
         self.logger.debug("Send request to %s", url)
         request_kwargs: dict[str, Any] = {"allow_redirects": False}
-        if self.proxy is not None:
-            request_kwargs["proxy"] = self.proxy
+        if proxy is not None:
+            request_kwargs["proxy"] = proxy
         if not self.ssl_verify:
             request_kwargs["verify"] = False
         elif self.ssl_ca_cert:
@@ -236,54 +246,100 @@ class BaseCrawler(metaclass=ABCMeta):
         Returns:
             str | None: HTML 문자열 (실패한 경우 None 반환)
         """
-        if not self.RESPONSE_BACKOFF_STATUS_CODES or not self.RESPONSE_BACKOFF_DELAYS_SECONDS:
+        if self.proxy and self.proxy_mode == "fallback":
+            # Share the successful route between boards on the same origin, and
+            # let only one caller probe direct access when the cooldown expires.
+            lock = self._proxy_locks.setdefault(self._proxy_origin(url), asyncio.Lock())
+        elif self.RESPONSE_BACKOFF_STATUS_CODES or url in self._response_backoff_until:
+            lock = self._response_backoff_locks.setdefault(url, asyncio.Lock())
+        else:
             return await self._request_with_backoff(url)
-
-        lock = self._response_backoff_locks.setdefault(url, asyncio.Lock())
         async with lock:
             return await self._request_with_backoff(url)
+
+    @staticmethod
+    def _proxy_origin(url: str) -> str:
+        parts = urlsplit(url)
+        return f"{parts.scheme}://{parts.netloc}"
+
+    def _is_challenge(self, response: HttpResponse) -> bool:
+        return response.headers.get("cf-mitigated", "").lower() == "challenge"
+
+    async def _request_attempts(self, url: str, proxy: str | None, attempts: int) -> HttpResponse | None:
+        for _ in range(attempts):
+            response = await self._request(url, proxy=proxy)
+            if response is not None:
+                return response
+        return None
 
     async def _request_with_backoff(self, url: str) -> str | None:
         """Request one URL after serializing its response-backoff state."""
         if self._response_backoff_until.get(url, 0) > time.monotonic():
             return
 
-        retry_count = 2
-        for _ in range(retry_count):
-            resp = await self._request(url)
-            if resp is not None:
-                break
+        fallback = bool(self.proxy) and self.proxy_mode == "fallback"
+        origin = self._proxy_origin(url)
+        use_proxy = fallback and self._proxy_until.get(origin, 0) > time.monotonic()
+        switched_to_proxy = False
+        if fallback:
+            resp = await self._request_attempts(url, self.proxy if use_proxy else "", 1 if use_proxy else 2)
+            if not use_proxy and (
+                resp is None or resp.status == 403 or (resp.status == 200 and self._is_challenge(resp))
+            ):
+                self.logger.info("Direct request failed; trying configured proxy (%s)", url)
+                proxy_response = await self._request_attempts(url, self.proxy, 1)
+                # A failed proxy connection must not erase the direct block's
+                # backoff policy or Retry-After header.
+                if proxy_response is not None:
+                    resp = proxy_response
+                use_proxy = True
+                switched_to_proxy = True
         else:
+            resp = await self._request_attempts(url, self.proxy, self.TRANSPORT_ATTEMPTS)
+
+        if resp is None:
             self.logger.error("Client connection failed: %s", url)
             return
 
-        if resp.status != 200:
-            self._schedule_response_backoff(url, resp.status, resp.headers)
-            if resp.status != self._prev_status_by_url.get(url, 200):
-                self.logger.error("Client response error: %s (%s)", resp.status, url)
+        status = 403 if resp.status == 200 and self._is_challenge(resp) else resp.status
+        if status != 200:
+            self._schedule_response_backoff(url, status, resp.headers)
+            if status != self._prev_status_by_url.get(url, 200):
+                self.logger.error("Client response error: %s (%s)", status, url)
                 await self.dump_http_response(resp)
             else:
-                self.logger.info("Client response error [skip]: %s (%s)", resp.status, url)
-            self._prev_status_by_url[url] = resp.status
+                self.logger.info("Client response error [skip]: %s (%s)", status, url)
+            self._prev_status_by_url[url] = status
             return
         self._prev_status_by_url[url] = resp.status
         self._clear_response_backoff(url)
 
         try:
-            return resp.text()
+            body = resp.text()
         except (LookupError, UnicodeDecodeError) as e:
             await self.dump_http_response(resp)
             self.logger.error("Cannot decode response body: %s", e)
             return None
+        if fallback:
+            if switched_to_proxy:
+                self._proxy_until[origin] = time.monotonic() + self.PROXY_COOLDOWN_SECONDS
+                self.logger.info("Proxy succeeded; using proxy for %ds (%s)", self.PROXY_COOLDOWN_SECONDS, origin)
+            elif not use_proxy:
+                if self._proxy_until.pop(origin, None) is not None:
+                    self.logger.info("Direct access restored (%s)", origin)
+        return body
 
     def _schedule_response_backoff(self, url: str, status: int, headers) -> None:
-        if status not in self.RESPONSE_BACKOFF_STATUS_CODES or not self.RESPONSE_BACKOFF_DELAYS_SECONDS:
+        delays = self.RESPONSE_BACKOFF_DELAYS_SECONDS
+        if status == 429 and not delays:
+            delays = (60,)
+        elif status not in self.RESPONSE_BACKOFF_STATUS_CODES or not delays:
             return
 
         failure_count = self._response_backoff_failures.get(url, 0) + 1
         self._response_backoff_failures[url] = failure_count
-        delay_index = min(failure_count - 1, len(self.RESPONSE_BACKOFF_DELAYS_SECONDS) - 1)
-        delay_seconds = self.RESPONSE_BACKOFF_DELAYS_SECONDS[delay_index]
+        delay_index = min(failure_count - 1, len(delays) - 1)
+        delay_seconds = delays[delay_index]
 
         retry_after = headers.get("Retry-After") if headers is not None else None
         retry_after_seconds = parse_retry_after_seconds(retry_after)

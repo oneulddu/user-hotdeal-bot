@@ -655,3 +655,51 @@ async def test_schedule_crawling_task_keeps_reference_until_done():
     await asyncio.sleep(0)
 
     assert task not in manager._bg_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crawler_class", ["DummyCrawler", "ArcaLiveCrawler", "ArcaLiveCrawlerV15"])
+async def test_proxy_mode_reload_preserves_or_resets_routing_state(crawler_class):
+    manager = BotManager()
+    manager.crawlers = {}
+    config = {
+        "test": {
+            "url_list": ["https://example.com"],
+            "crawler_name": crawler_class,
+            "enabled": True,
+            "proxy": "http://proxy",
+        }
+    }
+    async with aiohttp.ClientSession() as session:
+        manager.http_client = AiohttpClient(session=session)
+        await manager.init_crawlers(config)
+        first = manager.crawlers["test"]
+        assert first.proxy_mode == "fallback"
+        first._proxy_until["https://example.com"] = 1000
+        await manager.init_crawlers(config)
+        assert manager.crawlers["test"] is first
+        assert first._proxy_until == {"https://example.com": 1000}
+        await manager.init_crawlers({"test": {**config["test"], "proxy_mode": "always"}})
+        second = manager.crawlers["test"]
+        assert second is not first
+        assert second.proxy_mode == "always"
+        assert second._proxy_until == {}
+        await manager.init_crawlers(config)
+        assert manager.crawlers["test"].proxy_mode == "fallback"
+        assert manager.crawlers["test"] is not second
+        await manager.crawlers["test"].close()
+
+
+@pytest.mark.asyncio
+async def test_browser_proxy_mode_default_is_preserved_on_reload():
+    manager = BotManager()
+    manager.crawlers = {}
+    config = {"test": {"url_list": [], "crawler_name": "ArcaLiveCrawlerV2", "enabled": True, "proxy": "http://proxy"}}
+    async with aiohttp.ClientSession() as session:
+        manager.http_client = AiohttpClient(session=session)
+        await manager.init_crawlers(config)
+        first = manager.crawlers["test"]
+        assert first.proxy_mode == "always"
+        await manager.init_crawlers(config)
+        assert manager.crawlers["test"] is first
+        await first.close()

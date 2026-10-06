@@ -17,6 +17,8 @@ crawlers:
     description: 루리웹 유저 예판 핫딜 뽐뿌 게시판  # 설명
     enabled: true   # 크롤러 활성화 여부
     # proxy: http://127.0.0.1:8080  # (선택) 크롤러별 HTTP/HTTPS 프록시 URL
+    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시로 전환, 성공하면 20분 유지
+    # proxy_mode: always  # 기존처럼 처음부터 프록시를 사용할 경우
     # ssl_verify: true  # (선택) SSL 인증서 검증 여부, false로 설정 시 인증서 검증 비활성화
     # ssl_ca_cert: /path/to/ca-bundle.crt  # (선택) CA 인증서 경로, ssl_verify가 true일 때만 유효
   ppomppu_board:
@@ -68,6 +70,7 @@ crawlers:
     enabled: false
     # Chrome TLS fingerprint 흉내내기. 브라우저를 띄우지 않아 V2보다 가볍습니다.
     # proxy: http://127.0.0.1:8080
+    # proxy_mode: fallback  # 직접 접속 우선 (항상 프록시를 쓰려면 always)
   arcalive_hotdeal_v2:
     url_list:
     - https://arca.live/b/hotdeal
@@ -75,6 +78,7 @@ crawlers:
     description: 아카라이브 핫딜 게시판 (Scrapling)
     enabled: false
     # Cloudflare 챌린지 대응 실험용. 사용 시 arcalive_hotdeal을 끄고 이 항목을 켜세요.
+    # proxy_mode: always  # V2는 브라우저 세션의 고정 프록시만 지원합니다.
     # cookie_env: ARCALIVE_COOKIE
     # proxy: http://127.0.0.1:8080
 # 봇 설정 (메시지 전송)

@@ -21,6 +21,7 @@ class DummyCrawler(BaseCrawler):
         cookie_env: str | None = None,
         *,
         client: HttpClient | None = None,
+        proxy_mode: str | None = None,
     ) -> None:
         super().__init__(
             name,
@@ -33,6 +34,7 @@ class DummyCrawler(BaseCrawler):
             cookie=cookie,
             cookie_env=cookie_env,
             client=client,
+            proxy_mode=proxy_mode,
         )
         self.start = 1
         self.dummy_data = {i: self._generate_article_object(i) for i in range(self.start, self.start + 10)}

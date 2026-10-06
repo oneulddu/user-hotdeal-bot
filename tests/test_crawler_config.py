@@ -37,6 +37,10 @@ class FakeScraplingSession:
 class FakeCurlResponse:
     status_code = 200
     text = "<html><body>ok</body></html>"
+    content = text.encode()
+    headers = {}
+    url = "https://arca.live/b/hotdeal"
+    encoding = "utf-8"
 
 
 class FakeCurlSession:
@@ -445,6 +449,7 @@ async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
         request_headers={"Referer": "https://arca.live/b/hotdeal", "User-Agent": "Custom UA"},
         cookie="foo=bar",
         proxy="http://127.0.0.1:8080",
+        proxy_mode="always",
     )
 
     html = await crawler_instance.request("https://arca.live/b/hotdeal")
@@ -453,10 +458,7 @@ async def test_arcalive_v15_uses_chrome_impersonation_options(monkeypatch):
     session = created_sessions[0]
     assert session.kwargs["discard_cookies"] is True
     assert session.get_kwargs["impersonate"] == "chrome124"
-    assert session.get_kwargs["proxies"] == {
-        "http": "http://127.0.0.1:8080",
-        "https": "http://127.0.0.1:8080",
-    }
+    assert session.get_kwargs["proxies"] == {"all": "http://127.0.0.1:8080"}
     assert session.get_kwargs["timeout"] == 12
     assert session.get_kwargs["verify"] is True
     assert session.get_url == "https://arca.live/b/hotdeal"

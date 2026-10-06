@@ -161,8 +161,24 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 각 HTTP 시도의 전체 시간을 20초로 제한합니다. 크롤러별 `proxy`, `ssl_verify`, `ssl_ca_cert`,
 `headers`, `cookie`/`cookie_env` 설정을 요청마다 적용하고 응답 쿠키는 다음 요청에 승계하지 않습니다.
 전송 실패는 최대 2회 시도하며, 아래의 Quasarzone 응답 대기 정책도 유지합니다.
-명시한 프록시는 환경변수 `NO_PROXY`보다 우선합니다. 명시한 프록시가 없을 때 환경 프록시와
-`NO_PROXY`를 적용하며, `CurlCffiClient(trust_env=False)`는 환경 프록시를 사용하지 않습니다.
+
+일반 크롤러와 아카라이브 V1.5는 `proxy`를 설정해도 기본적으로 서버 IP로 먼저 접속합니다
+(`proxy_mode: fallback`). 직접 접속 중에는 환경 프록시도 사용하지 않습니다.
+403 또는 확인된 HTTP 200 차단 페이지가 오면 프록시로 1회 요청합니다. 연결 오류·타임아웃은
+직접 접속을 총 2회 시도한 뒤 프록시로 1회 요청합니다. 프록시에서 정상 응답을 받으면
+해당 크롤러의 동일 origin(스킴·호스트·포트)에 대해 20분간 프록시를 사용하고,
+이후 직접 접속을 다시 확인합니다. 중간에 프록시 요청이 성공해도 20분 기한을 연장하지 않습니다.
+이 상태는 메모리에만 유지되므로 재시작하거나 크롤러 설정을 변경하면 초기화됩니다.
+
+429·404·5xx·일반 파싱 오류로는 프록시로 전환하지 않습니다. 429는 `Retry-After`를 존중하며
+최소 60초간 해당 URL의 요청을 중단합니다(Quasarzone은 기존의 더 긴 백오프 적용).
+차단 페이지는 `cf-mitigated: challenge` 헤더로 확인하고, 아카라이브는 알려진 챌린지 제목과
+요소도 검사합니다. 게시글 목록이 없다는 이유만으로 차단으로 판단하지 않습니다.
+
+항상 프록시를 사용하려면 크롤러에 `proxy_mode: always`를 설정하세요. 명시한 프록시로 요청할
+때는 환경변수 `NO_PROXY`보다 우선합니다. `proxy`를 생략하면 기존처럼 환경 프록시와
+`NO_PROXY`를 적용하며, 환경 프록시만으로는 직접 접속/프록시 전환을 하지 않습니다.
+`CurlCffiClient(trust_env=False)`는 환경 프록시를 사용하지 않습니다.
 
 코드에서 `client=AiohttpClient(...)`를 주입하면 aiohttp와 Cloudflare DNS를 사용할 수 있습니다.
 기존 `session=aiohttp.ClientSession(...)` 주입도 지원하며 이 세션은 호출자가 종료합니다.
@@ -178,6 +194,8 @@ Quasarzone 크롤러는 HTTP 403/429가 반복될 때 5분, 30분, 2시간, 12�
 아카라이브의 기본 크롤러도 공유 `curl_cffi` 클라이언트를 사용합니다. V1.5는 전용 curl 세션과
 기존 `ARCALIVE_CURL_*` 설정을 유지하며, V2는 브라우저를 사용하는 실험용 Scrapling 크롤러입니다.
 V1.5와 V2의 전용 요청 경로에는 위의 공유 HTTP 클라이언트 설정 대신 각 구현의 시간 제한과 DNS 동작이 적용됩니다.
+V1.5는 기존 `ARCALIVE_CURL_TIMEOUT`(기본 30초)을 각 전송 시도에 적용합니다.
+실험용 V2는 브라우저 세션에 고정한 프록시를 사용하므로 `proxy_mode: always`만 지원하며 이것이 기본값입니다.
 
 ```yaml
 crawlers:
@@ -190,6 +208,7 @@ crawlers:
     enabled: true
     # 필요 시 프록시를 추가
     # proxy: http://127.0.0.1:8080
+    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시 사용 (항상 쓰려면 always)
   arcalive_hotdeal_v2:
     url_list:
     - https://arca.live/b/hotdeal
