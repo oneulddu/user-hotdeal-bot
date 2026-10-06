@@ -8,10 +8,11 @@ import re
 
 import aiohttp
 from bs4 import BeautifulSoup
+from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from scrapling.fetchers import AsyncStealthySession
 
-from src.http_client import HttpClient
+from src.http_client import HttpClient, HttpResponse
 
 from .base_crawler import BaseArticle, BaseCrawler
 
@@ -38,6 +39,7 @@ class ArcaLiveCrawler(BaseCrawler):
         cookie_env: str | None = None,
         *,
         client: HttpClient | None = None,
+        proxy_mode: str | None = None,
     ) -> None:
         headers = {**self.DEFAULT_REQUEST_HEADERS, **(request_headers or {})}
         if url_list and "Referer" not in headers:
@@ -54,8 +56,28 @@ class ArcaLiveCrawler(BaseCrawler):
             cookie=cookie,
             cookie_env=cookie_env,
             client=client,
+            proxy_mode=proxy_mode,
         )
         self.config_request_headers = request_headers or {}
+
+    def _is_challenge(self, response: HttpResponse) -> bool:
+        if super()._is_challenge(response):
+            return True
+        if response.status != 200:
+            return False
+        try:
+            soup = BeautifulSoup(response.text(), "html.parser")
+        except (LookupError, UnicodeDecodeError):
+            return False
+        # A missing board alone may be a layout change, not an IP block.
+        # Avoid matching challenge words/links in normal article titles.
+        if soup.select_one(".list-table") is not None:
+            return False
+        title = soup.title.get_text(strip=True).lower() if soup.title else ""
+        return (
+            title in {"just a moment...", "attention required! | cloudflare"}
+            or soup.select_one("#challenge-form, #cf-challenge-running, #cf-error-details") is not None
+        )
 
     async def parsing(self, html: str) -> dict[int, BaseArticle]:
         soup = BeautifulSoup(html, "html.parser")
@@ -140,6 +162,7 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
     SCRAPLING_WAIT_SELECTOR = ".list-table"
     SCRAPLING_USER_DATA_DIR = "./data/scrapling-arcalive"
     SCRAPLING_TOTAL_TIMEOUT_SECONDS = 100
+    DEFAULT_PROXY_MODE = "always"
 
     def __init__(
         self,
@@ -155,7 +178,10 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
         scrapling_session: AsyncStealthySession | None = None,
         *,
         client: HttpClient | None = None,
+        proxy_mode: str | None = None,
     ) -> None:
+        if proxy_mode not in (None, "always"):
+            raise ValueError("ArcaLiveCrawlerV2 only supports proxy_mode='always'")
         super().__init__(
             name,
             url_list,
@@ -167,6 +193,7 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             cookie=cookie,
             cookie_env=cookie_env,
             client=client,
+            proxy_mode=proxy_mode,
         )
         self._scrapling_session = scrapling_session
         self._scrapling_session_started = False
@@ -316,6 +343,7 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
     """curl_cffi-based ArcaLive crawler with Chrome TLS impersonation."""
 
     CURL_IMPERSONATE = "chrome124"
+    TRANSPORT_ATTEMPTS = 1
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -335,11 +363,6 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
         except ValueError:
             return default
 
-    def _curl_proxies(self) -> dict[str, str] | None:
-        if not self.proxy:
-            return None
-        return {"http": self.proxy, "https": self.proxy}
-
     def _curl_verify(self) -> bool | str:
         if not self.ssl_verify:
             return False
@@ -347,20 +370,23 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
             return self.ssl_ca_cert
         return True
 
-    async def request(self, url: str) -> str | None:
+    async def _request(self, url: str, *, proxy: str | None = None) -> HttpResponse | None:
         self.logger.debug("Send curl_cffi request to %s", url)
         session = None
         try:
             if self._curl_session is None:
                 # Reuse connections without carrying response cookies into the
                 # next request. Configured cookies remain request-specific.
-                self._curl_session = CurlAsyncSession(discard_cookies=True)
+                self._curl_session = CurlAsyncSession(
+                    discard_cookies=True,
+                    curl_options={CurlOpt.NOPROXY: ""} if self.proxy is not None else {},
+                )
             session = self._curl_session
             self._curl_session_users[session] = self._curl_session_users.get(session, 0) + 1
             response = await session.get(
                 url,
                 impersonate=os.getenv("ARCALIVE_CURL_IMPERSONATE", self.CURL_IMPERSONATE),
-                proxies=self._curl_proxies(),
+                proxies={"all": proxy} if proxy is not None else None,
                 timeout=self._env_int("ARCALIVE_CURL_TIMEOUT", 30),
                 verify=self._curl_verify(),
                 headers=self._curl_headers(),
@@ -386,17 +412,13 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
                     if session is not self._curl_session:
                         await session.close()
 
-        if response.status_code != 200:
-            if response.status_code != self._prev_status_by_url.get(url, 200):
-                self.logger.error("curl_cffi response error: %s (%s)", response.status_code, url)
-                await self.dump_curl_response(response)
-            else:
-                self.logger.info("curl_cffi response error [skip]: %s (%s)", response.status_code, url)
-            self._prev_status_by_url[url] = response.status_code
-            return None
-
-        self._prev_status_by_url[url] = response.status_code
-        return response.text
+        return HttpResponse(
+            status=response.status_code,
+            body=response.content,
+            headers=response.headers,
+            url=str(response.url),
+            charset=response.encoding,
+        )
 
     async def close(self):
         try:
@@ -407,13 +429,3 @@ class ArcaLiveCrawlerV15(ArcaLiveCrawler):
                     await session.close()
         finally:
             await super().close()
-
-    async def dump_curl_response(self, response) -> None:
-        current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join("error", f"{current_datetime}_{self.name}.html")
-
-        if not os.path.exists("error"):
-            os.makedirs("error")
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(response.text)

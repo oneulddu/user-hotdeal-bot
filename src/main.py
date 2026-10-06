@@ -79,6 +79,7 @@ class CrawlerConfig(TypedDict):
     description: str
     enabled: bool
     proxy: NotRequired[str | None]
+    proxy_mode: NotRequired[str | None]
     ssl_verify: NotRequired[bool]  # SSL 인증서 검증 여부 (기본값: True)
     ssl_ca_cert: NotRequired[str | None]  # CA 인증서 경로
     headers: NotRequired[dict[str, str]]  # 크롤러별 추가 HTTP 요청 헤더
@@ -376,6 +377,9 @@ class BotManager:
                 _cwr = _crawlers_old.pop(crawler_name)
                 # 설정이 동일한 경우 재사용
                 _new_proxy = crawler_config.get("proxy")
+                _new_proxy_mode = crawler_config.get("proxy_mode")
+                if _new_proxy_mode is None:
+                    _new_proxy_mode = _cwr.DEFAULT_PROXY_MODE
                 _new_ssl_verify = crawler_config.get("ssl_verify", True)
                 _new_ssl_ca_cert = crawler_config.get("ssl_ca_cert")
                 _new_headers = crawler_config.get("headers")
@@ -386,6 +390,7 @@ class BotManager:
                     _cwr.url_list == crawler_config["url_list"]
                     and _cwr.cls_name == crawler_config["crawler_name"]
                     and getattr(_cwr, "proxy", None) == _new_proxy
+                    and _cwr.proxy_mode == _new_proxy_mode
                     and getattr(_cwr, "ssl_verify", True) == _new_ssl_verify
                     and getattr(_cwr, "ssl_ca_cert", None) == _new_ssl_ca_cert
                     and getattr(_cwr, "config_request_headers", None) == (_new_headers or {})
@@ -416,6 +421,7 @@ class BotManager:
                 crawler_config["url_list"],
                 client=self.http_client,
                 proxy=crawler_config.get("proxy"),
+                proxy_mode=crawler_config.get("proxy_mode"),
                 ssl_verify=crawler_config.get("ssl_verify", True),
                 ssl_ca_cert=crawler_config.get("ssl_ca_cert"),
                 request_headers=crawler_config.get("headers"),

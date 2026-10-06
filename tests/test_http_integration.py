@@ -77,6 +77,7 @@ async def test_crawler_routes_requests_through_configured_proxy(client_type):
             [],
             client=client,
             proxy=proxy_url,
+            proxy_mode="always",
             request_headers={"X-Crawler": "proxy-test"},
             cookie="configured=value",
         )
