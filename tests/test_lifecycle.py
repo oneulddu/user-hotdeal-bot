@@ -218,23 +218,29 @@ async def test_reload_does_not_resume_bot_before_disabling_or_replacing_it(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_shutdown_saves_pending_notifications_when_scrapling_deadline_expires(tmp_path, monkeypatch):
-    from tests.test_crawler_config import FakeScraplingSession
+async def test_shutdown_saves_pending_notifications_when_api_request_times_out(tmp_path, monkeypatch):
+    from src.http_client import HttpTimeoutError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("src.main.close_db", AsyncMock())
     fetching = asyncio.Event()
 
-    class RetryingSession(FakeScraplingSession):
-        async def fetch(self, *args, **kwargs):
+    class TimingOutClient:
+        closed = False
+
+        async def get(self, *args, **kwargs):
             fetching.set()
-            await asyncio.Event().wait()
+            await asyncio.sleep(0.025)
+            raise HttpTimeoutError("request timed out")
+
+        async def close(self):
+            self.closed = True
 
     instance = LifecycleBot("dummy")
     manager = make_manager(instance)
-    browser_session = RetryingSession()
-    cwr = crawler.ArcaLiveCrawlerV2("dummy", ["https://example.com"], scrapling_session=browser_session)
-    monkeypatch.setattr(cwr, "SCRAPLING_TOTAL_TIMEOUT_SECONDS", 0.05)
+    client = TimingOutClient()
+    monkeypatch.setattr("src.crawler.base_crawler.create_default_http_client", lambda: client)
+    cwr = crawler.ArcaLiveCrawlerV2("dummy", ["https://arca.live/b/hotdeal"])
     manager.crawlers = {"dummy": cwr}
     await instance.send(make_article(1))
     await asyncio.wait_for(instance.started.wait(), timeout=2)
@@ -246,7 +252,6 @@ async def test_shutdown_saves_pending_notifications_when_scrapling_deadline_expi
         data = json.loads((tmp_path / "dump.json").read_text())
         assert data["crawler"]["dummy"]["1"]["article_id"] == 1
         assert [job[0] for job in data["bot"]["dummy"]["queue"]] == ["send"]
-        assert browser_session.closed
         assert cwr.client.closed
     finally:
         await instance.close()

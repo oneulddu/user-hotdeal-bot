@@ -68,17 +68,17 @@ crawlers:
     crawler_name: ArcaLiveCrawlerV15
     description: 아카라이브 핫딜 게시판 (curl_cffi V1.5)
     enabled: false
-    # Chrome TLS fingerprint 흉내내기. 브라우저를 띄우지 않아 V2보다 가볍습니다.
+    # HTML 수집용 Chrome TLS fingerprint 흉내내기.
     # proxy: http://127.0.0.1:8080
     # proxy_mode: fallback  # 직접 접속 우선 (항상 프록시를 쓰려면 always)
   arcalive_hotdeal_v2:
     url_list:
     - https://arca.live/b/hotdeal
     crawler_name: ArcaLiveCrawlerV2
-    description: 아카라이브 핫딜 게시판 (Scrapling)
+    description: 아카라이브 핫딜 게시판 (앱 API)
     enabled: false
-    # Cloudflare 챌린지 대응 실험용. 사용 시 arcalive_hotdeal을 끄고 이 항목을 켜세요.
-    # proxy_mode: always  # V2는 브라우저 세션의 고정 프록시만 지원합니다.
+    # 기존 설정 키를 유지하고 crawler_name만 ArcaLiveCrawlerV2로 바꾸는 것을 권장합니다.
+    # proxy_mode: always  # V2 기본값. 직접 접속 우선은 fallback으로 지정합니다.
     # cookie_env: ARCALIVE_COOKIE
     # proxy: http://127.0.0.1:8080
 # 봇 설정 (메시지 전송)

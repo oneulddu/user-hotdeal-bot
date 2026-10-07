@@ -1,74 +1,11 @@
 import asyncio
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
 
 import aiohttp
 import pytest
 from aiohttp import web
-from scrapling.fetchers import AsyncStealthySession
 
-from src.crawler import ArcaLiveCrawlerV2, ArcaLiveCrawlerV15, arcalive
-from tests.test_crawler_config import FakeCurlSession, FakeScraplingResponse, FakeScraplingSession
-
-
-@pytest.mark.asyncio
-async def test_scrapling_parallel_requests_start_one_session_and_close_once():
-    class SlowSession(FakeScraplingSession):
-        start_count = 0
-        close_count = 0
-
-        async def start(self):
-            self.start_count += 1
-            await asyncio.sleep(0)
-
-        async def close(self):
-            self.close_count += 1
-
-    session = SlowSession()
-    instance = ArcaLiveCrawlerV2("test", ["https://example.com"], scrapling_session=session)
-    try:
-        responses = await asyncio.gather(*(instance.request(f"https://example.com/{i}") for i in range(20)))
-        assert responses == [FakeScraplingResponse.html_content] * 20
-        assert session.start_count == 1
-    finally:
-        await instance.close()
-        await instance.close()
-    assert session.close_count == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cancel_start", [False, True])
-async def test_scrapling_failed_or_cancelled_start_cleans_up_and_can_retry(monkeypatch, cancel_start):
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    class BrokenSession(FakeScraplingSession):
-        async def start(self):
-            started.set()
-            await release.wait()
-            raise RuntimeError("browser start failed")
-
-    failed = BrokenSession()
-    replacement = FakeScraplingSession()
-    monkeypatch.setattr(arcalive, "AsyncStealthySession", lambda **kwargs: replacement)
-    instance = ArcaLiveCrawlerV2("test", ["https://example.com"], scrapling_session=failed)
-    first = asyncio.create_task(instance.request("https://example.com"))
-    try:
-        await asyncio.wait_for(started.wait(), timeout=2)
-        if cancel_start:
-            first.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await first
-        else:
-            release.set()
-            assert await first is None
-        assert failed.closed
-        assert await instance.request("https://example.com") == FakeScraplingResponse.html_content
-        assert replacement.started
-    finally:
-        await instance.close()
-    assert replacement.closed
+from src.crawler import ArcaLiveCrawlerV15, arcalive
+from tests.test_crawler_config import FakeCurlSession
 
 
 @pytest.mark.asyncio
@@ -144,85 +81,6 @@ async def test_real_curl_reuses_connection_without_carrying_response_cookies(mon
     finally:
         await instance.close()
         await runner.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_scrapling_real_start_cancellation_stops_partial_driver(monkeypatch):
-    from scrapling.engines._browsers import _stealth
-
-    drivers = []
-    started = asyncio.Queue()
-
-    async def launch(**kwargs):
-        started.put_nowait(True)
-        await asyncio.Event().wait()
-
-    def playwright_factory():
-        driver = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
-        drivers.append(driver)
-        return SimpleNamespace(start=AsyncMock(return_value=driver))
-
-    def make_session(**kwargs):
-        # Run the installed dependency's real start/close methods without launching
-        # a driver. Only the browser launch boundary is replaced.
-        session = object.__new__(AsyncStealthySession)
-        session.playwright = None
-        session.context = None
-        session.browser = None
-        session._is_alive = False
-        session._config = SimpleNamespace(cdp_url=None, proxy_rotator=None)
-        session._browser_options = {}
-        session._context_options = {}
-        session._user_data_dir = "unused"
-        return session
-
-    monkeypatch.setattr(_stealth, "async_playwright", playwright_factory)
-    monkeypatch.setattr(arcalive, "AsyncStealthySession", make_session)
-    instance = ArcaLiveCrawlerV2("test", ["https://example.com"])
-    try:
-        for _ in range(2):
-            task = asyncio.create_task(instance.request("https://example.com"))
-            await asyncio.wait_for(started.get(), timeout=2)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            assert instance._scrapling_session is None
-        assert len(drivers) == 2
-        for driver in drivers:
-            driver.stop.assert_awaited_once()
-    finally:
-        await instance.close()
-
-
-@pytest.mark.asyncio
-async def test_scrapling_total_deadline_bounds_real_fetch_retries(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    session = AsyncStealthySession()
-    session._is_alive = True
-    session._config.retry_delay = 0
-    attempts = []
-    started = asyncio.Event()
-
-    async def goto(url, **kwargs):
-        attempts.append(url)
-        started.set()
-        if len(attempts) == 1:
-            raise TimeoutError("first attempt timed out")
-        await asyncio.Event().wait()
-
-    @asynccontextmanager
-    async def page_generator(*args):
-        yield SimpleNamespace(page=SimpleNamespace(on=Mock(), goto=goto), mark_error=Mock())
-
-    monkeypatch.setattr(session, "_page_generator", page_generator)
-    instance = ArcaLiveCrawlerV2("test", ["https://example.com"], scrapling_session=session)
-    instance._scrapling_session_started = True
-    monkeypatch.setattr(instance, "SCRAPLING_TOTAL_TIMEOUT_SECONDS", 0.05)
-    try:
-        assert await asyncio.wait_for(instance.request("https://example.com"), timeout=1) is None
-        assert len(attempts) == 2
-    finally:
-        await instance.close()
 
 
 @pytest.mark.asyncio

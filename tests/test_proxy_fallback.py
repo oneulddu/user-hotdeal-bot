@@ -8,7 +8,6 @@ from aiohttp import web
 
 from src.crawler import (
     ArcaLiveCrawler,
-    ArcaLiveCrawlerV2,
     ArcaLiveCrawlerV15,
     DummyCrawler,
     QuasarzoneCrawler,
@@ -284,11 +283,9 @@ async def test_cooldown_is_isolated_per_origin_and_crawler():
     assert client.calls == ["", "http://proxy", "", ""]
 
 
-def test_invalid_proxy_mode_and_unsupported_browser_mode_are_rejected():
+def test_invalid_proxy_mode_is_rejected():
     with pytest.raises(ValueError, match="proxy_mode"):
         DummyCrawler("test", [], proxy_mode="typo")
-    with pytest.raises(ValueError, match="only supports"):
-        ArcaLiveCrawlerV2("test", [], proxy_mode="fallback")
 
 
 @pytest.mark.asyncio
