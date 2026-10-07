@@ -184,3 +184,6 @@ data/
 .ruff_cache
 docker-compose.local.yml
 flare-tunnel-data
+
+# Persistent crawler snapshots
+/state/

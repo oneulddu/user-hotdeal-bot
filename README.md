@@ -83,6 +83,8 @@ bots:
 
 `docker-compose.yml` 은 **마이그레이션 → 크롤러 → API** 세 서비스를 정의하며, SQLite DB 볼륨(`hotdeal-db`)을 공유합니다.
 
+기존 설치는 시작 전에 [덤프 저장 경로 전환](#덤프-저장-경로-전환)을 진행하세요.
+
 ```bash
 docker compose pull --include-deps
 docker compose up -d --no-build            # 전체 (migrate → crawler + api)
@@ -120,7 +122,8 @@ docker run -d --name user-hotdeal-bot-crawler \
   -e DATABASE_URL=sqlite+aiosqlite:///./data/hotdeal.db \
   -v ./config.yaml:/app/config.yaml:ro \
   -v ./log:/app/log \
-  -v ./dump.json:/app/dump.json \
+  -v ./state:/app/state \
+  -e DUMP_FILE_PATH=/app/state/dump.json \
   -v hotdeal-db:/app/data \
   user-hotdeal-bot:crawler
 
@@ -231,12 +234,35 @@ URL은 `https://arca.live/b/{채널}` 형식이며 `category`, `target`, `keywor
 막습니다. HTML에 삽입되는 광고는 API 목록과 다를 수 있습니다. 전환 직후 기존 광고 글이 추적
 범위 밖으로 빠지거나 삭제된 것으로 분류될 수 있으며, 일반 게시글의 가격·종료 상태 추적은 유지됩니다.
 
+### 덤프 저장 경로 전환
+
+Docker Compose는 `./state` 디렉터리를 `/app/state`에 연결하고
+`DUMP_FILE_PATH=/app/state/dump.json`으로 캐시·메시지 매핑·대기 알림을 저장합니다.
+단일 `dump.json` 파일을 직접 마운트하면 원자적 파일 교체가 `EBUSY`로 실패하므로 사용하지 마세요.
+로컬 실행의 기본 경로는 `dump.json`이며 `DUMP_FILE_PATH`로 변경할 수 있습니다.
+
+기존 설치는 크롤러를 중지한 상태에서 기존 덤프를 백업한 뒤 한 번만 옮기세요.
+이미 `state/dump.json`이 있으면 최신 상태일 수 있으므로 덮어쓰지 마세요.
+
+```bash
+mkdir -p state
+# 기존 dump.json이 있는 설치에서만 실행
+cp -p dump.json dump.json.before-state-migration
+cp -n dump.json state/dump.json
+```
+
+새 경로가 비어 있어도 예전 파일을 자동으로 읽지 않습니다. 복구·마이그레이션 도구를
+사용할 때도 실제 저장 경로(`state/dump.json`)를 지정하세요. 종료 중 저장이 실패하면 오류와
+함께 0이 아닌 코드로 종료하며, 기존 정상 덤프를 유지합니다. 초기화가 끝나기 전 종료되면
+부분 로드 상태로 기존 덤프를 덮어쓰지 않습니다.
+
 ### 주요 환경 변수
 
 | 변수 | 설명 | 기본값 |
 | --- | --- | --- |
 | `DATABASE_URL` | DB 접속 URL | `sqlite+aiosqlite:///./data/hotdeal.db` |
 | `TZ` | 타임존 | `UTC` (compose 예시는 `Asia/Seoul`) |
+| `DUMP_FILE_PATH` | 캐시·알림 덤프 경로 | 로컬 `dump.json`, Compose `/app/state/dump.json` |
 | `API_CORS_ORIGINS` | API CORS 허용 출처 (쉼표 구분) | `*` |
 
 ```bash
