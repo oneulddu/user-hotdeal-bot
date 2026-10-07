@@ -1,10 +1,8 @@
 services:
   # Crawler + Telegram Bot service (original)
   crawler:
-    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:latest
-    build:
-      context: .
-      target: crawler
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:${HOTDEAL_IMAGE_TAG:-main}
+    pull_policy: always
     container_name: user-hotdeal-bot-crawler
     restart: unless-stopped
     stop_grace_period: 2m
@@ -22,9 +20,8 @@ services:
 
   # Alembic migration runner (one-shot)
   migrate:
-    build:
-      context: .
-      target: base
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/crawler:${HOTDEAL_IMAGE_TAG:-main}
+    pull_policy: always
     container_name: user-hotdeal-bot-migrate
     volumes:
       - hotdeal-db:/app/data
@@ -35,10 +32,8 @@ services:
 
   # FastAPI API server
   api:
-    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/api:latest
-    build:
-      context: .
-      target: api
+    image: ${HOTDEAL_IMAGE_BASE:-ghcr.io/oneulddu/user-hotdeal-bot}/api:${HOTDEAL_IMAGE_TAG:-main}
+    pull_policy: always
     container_name: user-hotdeal-bot-api
     restart: unless-stopped
     ports:
