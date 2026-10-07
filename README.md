@@ -84,12 +84,16 @@ bots:
 `docker-compose.yml` 은 **마이그레이션 → 크롤러 → API** 세 서비스를 정의하며, SQLite DB 볼륨(`hotdeal-db`)을 공유합니다.
 
 ```bash
-docker compose up -d            # 전체 (migrate → crawler + api)
-docker compose up -d crawler    # 크롤러 + 텔레그램 봇만
-docker compose up -d api        # API 서버만 (http://localhost:8000)
+docker compose pull --include-deps
+docker compose up -d --no-build            # 전체 (migrate → crawler + api)
+docker compose up -d --no-build crawler    # 크롤러 + 텔레그램 봇만
+docker compose up -d --no-build api        # API 서버만 (http://localhost:8000)
 ```
 
 > `migrate` 서비스가 먼저 `alembic upgrade head` 로 스키마를 적용한 뒤 크롤러·API가 기동됩니다.
+> 기본 이미지는 `main` 브랜치에서 게시된 `:main` 태그를 사용합니다. 이미지를 고정하려면
+> GHCR에 게시된 태그를 확인한 뒤 `HOTDEAL_IMAGE_TAG='게시된-태그' docker compose up -d --no-build`처럼 지정하세요.
+> 로컬 소스를 빌드하려면 아래의 수동 빌드 절차를 사용하세요.
 
 운영 예시는 [`docker-compose.prod.example.yml`](docker-compose.prod.example.yml), 로컬 예시는 [`docker-compose.local.example.yml`](docker-compose.local.example.yml) 을 참고하세요.
 

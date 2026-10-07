@@ -84,10 +84,30 @@ def test_default_compose_runs_migrations_before_app_services():
     services = compose["services"]
 
     assert services["migrate"]["command"] == ["alembic", "upgrade", "head"]
-    assert "image" not in services["migrate"]
+    assert services["migrate"]["image"] == services["crawler"]["image"]
 
     for service_name in ("crawler", "api"):
         assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+
+
+def test_ghcr_compose_images_default_to_main_branch_tag():
+    default_compose = load_yaml("docker-compose.yml")
+    production_compose = load_yaml("docker-compose.prod.example.yml")
+
+    for service_name in ("crawler", "migrate", "api"):
+        service = default_compose["services"][service_name]
+        image = service["image"]
+        assert image.endswith(":${HOTDEAL_IMAGE_TAG:-main}")
+        assert not image.endswith(":latest")
+        assert service["pull_policy"] == "always"
+        assert "build" not in service
+
+    for service_name in ("migrate", "crawler", "api", "backup"):
+        service = production_compose["services"][service_name]
+        image = service["image"]
+        assert image.endswith(":${HOTDEAL_IMAGE_TAG:-main}")
+        assert not image.endswith(":latest")
+        assert service["pull_policy"] == "always"
 
 
 def test_local_compose_crawler_waits_for_migrations():
