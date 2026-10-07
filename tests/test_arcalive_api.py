@@ -116,6 +116,7 @@ async def test_api_preserves_settings_filters_device_token_and_caches_metadata()
         [URL + "?category=pc&target=all&keyword=SSD+%26+RAM&p=1"],
         client=client,
         proxy="http://proxy",
+        proxy_mode="always",
         ssl_ca_cert="ca.pem",
         cookie="foo=bar",
         request_headers={"user-agent": "custom-app", "x-device-token": "initial"},
@@ -270,7 +271,7 @@ async def test_parallel_channels_keep_their_own_context():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [403, 200])
-async def test_blocked_direct_request_falls_back_to_proxy(status):
+async def test_default_mode_falls_back_to_proxy_after_direct_failure(status):
     client = ApiClient()
     base_get = client.get
     routes = []
@@ -282,7 +283,7 @@ async def test_blocked_direct_request_falls_back_to_proxy(status):
         return await base_get(url, **kwargs)
 
     client.get = get
-    cwr = ArcaLiveCrawlerV2("test", [URL], client=client, proxy="http://proxy", proxy_mode="fallback")
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=client, proxy="http://proxy")
     assert await cwr.get()
     assert await cwr.get()
     assert routes == ["", "http://proxy", "http://proxy", "http://proxy"]

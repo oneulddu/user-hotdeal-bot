@@ -699,7 +699,7 @@ async def test_arcalive_v2_proxy_mode_default_is_preserved_on_reload():
         manager.http_client = AiohttpClient(session=session)
         await manager.init_crawlers(config)
         first = manager.crawlers["test"]
-        assert first.proxy_mode == "always"
+        assert first.proxy_mode == "fallback"
         await manager.init_crawlers(config)
         assert manager.crawlers["test"] is first
         await first.close()

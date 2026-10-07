@@ -78,7 +78,7 @@ crawlers:
     description: 아카라이브 핫딜 게시판 (앱 API)
     enabled: false
     # 기존 설정 키를 유지하고 crawler_name만 ArcaLiveCrawlerV2로 바꾸는 것을 권장합니다.
-    # proxy_mode: always  # V2 기본값. 직접 접속 우선은 fallback으로 지정합니다.
+    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시 사용 (항상 쓰려면 always)
     # cookie_env: ARCALIVE_COOKIE
     # proxy: http://127.0.0.1:8080
 # 봇 설정 (메시지 전송)

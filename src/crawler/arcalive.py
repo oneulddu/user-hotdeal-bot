@@ -165,8 +165,6 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
         "User-Agent": "net.umanle.arca.android/0.9.85",
         "Accept": "application/json",
     }
-    # Preserve the old V2's explicit-proxy default; fallback is now also supported.
-    DEFAULT_PROXY_MODE = "always"
 
     def __init__(
         self,

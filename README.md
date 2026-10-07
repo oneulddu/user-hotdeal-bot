@@ -161,7 +161,7 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 `headers`, `cookie`/`cookie_env` 설정을 요청마다 적용하고 응답 쿠키는 다음 요청에 승계하지 않습니다.
 전송 실패는 최대 2회 시도하며, 아래의 Quasarzone 응답 대기 정책도 유지합니다.
 
-일반 크롤러와 아카라이브 V1.5는 `proxy`를 설정해도 기본적으로 서버 IP로 먼저 접속합니다
+일반 크롤러와 아카라이브 V1.5/V2는 `proxy`를 설정해도 기본적으로 서버 IP로 먼저 접속합니다
 (`proxy_mode: fallback`). 직접 접속 중에는 환경 프록시도 사용하지 않습니다.
 403 또는 확인된 HTTP 200 차단 페이지가 오면 프록시로 1회 요청합니다. 연결 오류·타임아웃은
 직접 접속을 총 2회 시도한 뒤 프록시로 1회 요청합니다. 프록시에서 정상 응답을 받으면
@@ -209,12 +209,12 @@ crawlers:
     enabled: true
     # 기존 프록시가 있다면 그대로 유지
     # proxy: http://127.0.0.1:8080
-    # proxy_mode: always  # V2 기본값. 직접 접속 우선은 fallback
+    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시 사용
 ```
 
 공개 핫딜 조회에는 로그인 토큰이 필요 없습니다. API도 운영 환경에 따라 403으로 차단될 수 있어
-프록시가 필요할 수 있습니다. `proxy_mode: fallback`은 직접 접속 실패 시 기존 프록시로 전환하고,
-기본값 `always`는 프록시가 설정되어 있으면 처음부터 사용합니다. 앱 User-Agent와 장치 토큰은
+프록시가 필요할 수 있습니다. 기본값 `proxy_mode: fallback`은 직접 접속 실패 시 기존 프록시로 전환하고,
+명시적으로 `always`를 지정하면 설정된 프록시를 처음부터 사용합니다. 앱 User-Agent와 장치 토큰은
 자동 설정되며, 명시한 `headers`는 대소문자 구분 없이 기본 헤더를 덮어씁니다.
 
 URL은 `https://arca.live/b/{채널}` 형식이며 `category`, `target`, `keyword` 필터와 `p=1`을
