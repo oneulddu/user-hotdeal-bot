@@ -691,7 +691,7 @@ async def test_proxy_mode_reload_preserves_or_resets_routing_state(crawler_class
 
 
 @pytest.mark.asyncio
-async def test_browser_proxy_mode_default_is_preserved_on_reload():
+async def test_arcalive_v2_proxy_mode_default_is_preserved_on_reload():
     manager = BotManager()
     manager.crawlers = {}
     config = {"test": {"url_list": [], "crawler_name": "ArcaLiveCrawlerV2", "enabled": True, "proxy": "http://proxy"}}
@@ -699,7 +699,7 @@ async def test_browser_proxy_mode_default_is_preserved_on_reload():
         manager.http_client = AiohttpClient(session=session)
         await manager.init_crawlers(config)
         first = manager.crawlers["test"]
-        assert first.proxy_mode == "always"
+        assert first.proxy_mode == "fallback"
         await manager.init_crawlers(config)
         assert manager.crawlers["test"] is first
         await first.close()

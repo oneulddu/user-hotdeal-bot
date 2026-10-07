@@ -1,20 +1,22 @@
 # 아카라이브 핫딜 채널
 # https://arca.live/b/hotdeal
-# API 문서화되면 전환 예정
 import asyncio
-import datetime
+import json
 import os
 import re
+import uuid
+from decimal import Decimal, InvalidOperation
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
 from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
-from scrapling.fetchers import AsyncStealthySession
+from multidict import CIMultiDict
 
 from src.http_client import HttpClient, HttpResponse
 
-from .base_crawler import BaseArticle, BaseCrawler
+from .base_crawler import ArticleCollection, BaseArticle, BaseCrawler
 
 
 class ArcaLiveCrawler(BaseCrawler):
@@ -157,12 +159,12 @@ class ArcaLiveCrawler(BaseCrawler):
 
 
 class ArcaLiveCrawlerV2(ArcaLiveCrawler):
-    """Scrapling-based ArcaLive crawler for Cloudflare-protected responses."""
+    """Read-only app API crawler; keep the HTML crawlers available as alternatives."""
 
-    SCRAPLING_WAIT_SELECTOR = ".list-table"
-    SCRAPLING_USER_DATA_DIR = "./data/scrapling-arcalive"
-    SCRAPLING_TOTAL_TIMEOUT_SECONDS = 100
-    DEFAULT_PROXY_MODE = "always"
+    DEFAULT_REQUEST_HEADERS = {
+        "User-Agent": "net.umanle.arca.android/0.9.85",
+        "Accept": "application/json",
+    }
 
     def __init__(
         self,
@@ -175,13 +177,13 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
         request_headers: dict[str, str] | None = None,
         cookie: str | None = None,
         cookie_env: str | None = None,
-        scrapling_session: AsyncStealthySession | None = None,
         *,
         client: HttpClient | None = None,
         proxy_mode: str | None = None,
     ) -> None:
-        if proxy_mode not in (None, "always"):
-            raise ValueError("ArcaLiveCrawlerV2 only supports proxy_mode='always'")
+        # Validate before allocating a transport. Never silently broaden a filter.
+        for url in url_list:
+            self._api_target(url)
         super().__init__(
             name,
             url_list,
@@ -195,148 +197,192 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             client=client,
             proxy_mode=proxy_mode,
         )
-        self._scrapling_session = scrapling_session
-        self._scrapling_session_started = False
-        self._scrapling_session_lock = asyncio.Lock()
-        self._scrapling_useragent = self._configured_useragent(request_headers or {})
+        headers = CIMultiDict(self.DEFAULT_REQUEST_HEADERS)
+        headers.update(request_headers or {})
+        headers.setdefault("X-Device-Token", str(uuid.uuid4()))
+        self.request_headers = headers
+        self._channels: dict[str, dict] = {}
+        self._channel_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
-    def _configured_useragent(headers: dict[str, str]) -> str | None:
-        for key, value in headers.items():
-            if key.lower() == "user-agent":
-                return value
-        return None
+    def _api_target(url: str) -> tuple[str, str]:
+        parts = urlsplit(url)
+        match = re.fullmatch(r"/b/([A-Za-z0-9_-]+)/?", parts.path)
+        if parts.scheme != "https" or parts.netloc != "arca.live" or not match or parts.fragment:
+            raise ValueError("ArcaLiveCrawlerV2 requires https://arca.live/b/{channel} URLs")
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        for key, value in query:
+            if key == "p" and value == "1":
+                continue
+            if key not in {"category", "target", "keyword"}:
+                raise ValueError(f"Unsupported ArcaLiveCrawlerV2 query parameter: {key}")
+        params = [(key, value) for key, value in query if key != "p"]
+        params.append(("limit", "30"))
+        slug = match.group(1)
+        return slug, f"https://arca.live/api/app/list/channel/{slug}?{urlencode(params)}"
 
-    def _scrapling_extra_headers(self) -> dict[str, str]:
-        return {key: value for key, value in self.request_headers.items() if key.lower() != "user-agent"}
-
-    def _scrapling_cookies(self) -> list[dict[str, str]]:
-        if not self.request_cookies or not self.url_list:
-            return []
-        return [{"name": key, "value": value, "url": self.url_list[0]} for key, value in self.request_cookies.items()]
-
-    @staticmethod
-    def _env_bool(name: str, default: bool) -> bool:
-        value = os.getenv(name)
-        if value is None:
-            return default
-        return value.lower() in {"1", "true", "yes", "on"}
-
-    @staticmethod
-    def _env_int(name: str, default: int) -> int:
-        value = os.getenv(name)
-        if value is None:
-            return default
+    def _is_challenge(self, response: HttpResponse) -> bool:
+        if BaseCrawler._is_challenge(self, response):
+            return True
+        if response.status != 200:
+            return False
+        # HTML interstitials sometimes return 200; do not mark direct access restored.
         try:
-            return int(value)
-        except ValueError:
-            return default
+            return not isinstance(json.loads(response.text()), dict)
+        except (ValueError, LookupError):
+            return True
 
-    async def _ensure_scrapling_session(self) -> AsyncStealthySession:
-        async with self._scrapling_session_lock:
-            return await self._start_scrapling_session()
+    async def _request(self, url: str, *, proxy: str | None = None) -> HttpResponse | None:
+        response = await super()._request(url, proxy=proxy)
+        if response is not None and response.status == 200:
+            token = response.headers.get("X-Device-Token")
+            if token:
+                self.request_headers["X-Device-Token"] = token
+        return response
 
-    async def _start_scrapling_session(self) -> AsyncStealthySession:
-        if self._scrapling_session is None:
-            kwargs = {
-                "max_pages": 1,
-                "headless": self._env_bool("ARCALIVE_SCRAPLING_HEADLESS", True),
-                "disable_resources": self._env_bool("ARCALIVE_SCRAPLING_DISABLE_RESOURCES", False),
-                "network_idle": True,
-                "load_dom": True,
-                "google_search": False,
-                "solve_cloudflare": True,
-                "locale": "ko-KR",
-                "timezone_id": "Asia/Seoul",
-                "proxy": self.proxy,
-                "cookies": self._scrapling_cookies() or None,
-                "user_data_dir": os.getenv("ARCALIVE_SCRAPLING_USER_DATA_DIR", self.SCRAPLING_USER_DATA_DIR),
-                "hide_canvas": True,
-                "block_webrtc": True,
-            }
-            if self._scrapling_useragent:
-                kwargs["useragent"] = self._scrapling_useragent
-            self._scrapling_session = AsyncStealthySession(**kwargs)
-
-        if not self._scrapling_session_started:
-            try:
-                await self._scrapling_session.start()
-            except BaseException:
-                failed_session = self._scrapling_session
-                self._scrapling_session = None
+    async def _channel(self, slug: str) -> dict:
+        async with self._channel_locks.setdefault(slug, asyncio.Lock()):
+            if slug not in self._channels:
+                body = await super().request(f"https://arca.live/api/app/info/channel/{slug}")
                 try:
-                    await self._close_scrapling_session(failed_session)
-                except Exception as e:
-                    self.logger.warning("Failed to close partially started Scrapling session: %s", e)
-                raise
-            self._scrapling_session_started = True
-        return self._scrapling_session
-
-    @staticmethod
-    async def _close_scrapling_session(session) -> None:
-        try:
-            await session.close()
-        finally:
-            # Scrapling 0.4.9 close() returns early until startup sets _is_alive.
-            # Its public driver can already exist when browser startup is cancelled.
-            driver = getattr(session, "playwright", None)
-            if driver is not None:
-                await driver.stop()
-                session.playwright = None
+                    channel = json.loads(body or "null")["channel"]
+                    if channel["slug"] == slug and isinstance(channel["name"], str) and channel["name"].strip():
+                        self._channels[slug] = {
+                            "slug": slug,
+                            "name": channel["name"],
+                            "categoryData": [
+                                {"id": key, "displayName": value}
+                                for key, value in self._category_names(channel).items()
+                            ],
+                        }
+                except (ValueError, TypeError, KeyError):
+                    self.logger.warning("Cannot read channel metadata: %s", slug)
+            # Metadata failure must not discard otherwise valid deal data.
+            return self._channels.get(
+                slug,
+                {
+                    "slug": slug,
+                    "name": "핫딜 채널" if slug == "hotdeal" else slug,
+                    "categoryData": [],
+                },
+            )
 
     async def request(self, url: str) -> str | None:
-        self.logger.debug("Send Scrapling request to %s", url)
+        slug, api_url = self._api_target(url)
+        body = await super().request(api_url)
+        if body is None:
+            return None
         try:
-            total_timeout = self._env_int("ARCALIVE_SCRAPLING_TOTAL_TIMEOUT", self.SCRAPLING_TOTAL_TIMEOUT_SECONDS)
-            if total_timeout <= 0:
-                total_timeout = self.SCRAPLING_TOTAL_TIMEOUT_SECONDS
-            # Include browser startup, page-pool waits and all internal retries.
-            async with asyncio.timeout(total_timeout):
-                scrapling_session = await self._ensure_scrapling_session()
-                response = await scrapling_session.fetch(
-                    url,
-                    extra_headers=self._scrapling_extra_headers(),
-                    google_search=False,
-                    solve_cloudflare=True,
-                    wait_selector=self.SCRAPLING_WAIT_SELECTOR,
-                    wait_selector_state="attached",
-                    timeout=self._env_int("ARCALIVE_SCRAPLING_TIMEOUT_MS", 90_000),
-                    wait=self._env_int("ARCALIVE_SCRAPLING_WAIT_MS", 5_000),
+            payload = json.loads(body)
+            if not isinstance(payload, dict) or not isinstance(payload.get("articles"), list):
+                raise ValueError("Missing article list")
+        except ValueError:
+            self.logger.error("Invalid app API response: %s", api_url)
+            return None
+        # Carry context with each response: parallel channels must not share a slug.
+        return json.dumps({"channel": await self._channel(slug), "articles": payload["articles"]}, ensure_ascii=False)
+
+    @staticmethod
+    def _money(value: dict, *, delivery: bool = False) -> str:
+        if not isinstance(value, dict) or type(value.get("number")) not in (int, float):
+            raise ValueError("Invalid deal amount")
+        amount = Decimal(str(value["number"]))
+        currency = value.get("currency")
+        if not amount.is_finite() or amount < 0 or not isinstance(currency, str) or not currency:
+            raise ValueError("Invalid deal currency or amount")
+        if delivery and amount == 0:
+            return "무료"
+        number = format(amount, ",f")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        if currency == "KRW":
+            return f"{number}원"
+        symbol = {"USD": "$", "JPY": "¥", "EUR": "€"}.get(currency)
+        return f"{symbol}{number}" if symbol else f"{number} {currency}"
+
+    @staticmethod
+    def _category_names(channel: dict) -> dict[str, str]:
+        entries = channel.get("categoryData")
+        if not isinstance(entries, list):
+            return {}
+        return {
+            entry["id"]: entry["displayName"]
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and entry["id"]
+            and isinstance(entry.get("displayName"), str)
+            and entry["displayName"].strip()
+        }
+
+    async def parsing(self, body: str) -> dict[int, BaseArticle]:
+        try:
+            payload = json.loads(body)
+            channel = payload["channel"]
+            slug, board_name = channel["slug"], channel["name"]
+            categories = self._category_names(channel)
+            if not isinstance(payload["articles"], list):
+                raise ValueError("Invalid article list")
+            data: dict[int, BaseArticle] = {}
+            for item in payload["articles"]:
+                if not isinstance(item, dict):
+                    raise ValueError("Invalid article")
+                if item.get("isNotice") is True:
+                    continue
+                article_id = item["id"]
+                deal = item["deal"]
+                if type(article_id) is not int or article_id <= 0 or article_id in data:
+                    raise ValueError("Invalid or duplicate article ID")
+                if not isinstance(deal, dict) or type(deal.get("isClosed")) is not bool:
+                    raise ValueError("Missing deal status")
+                title, writer = item["title"], item["nickname"]
+                if not isinstance(title, str) or not title.strip() or not isinstance(writer, str) or not writer.strip():
+                    raise ValueError("Missing title or writer")
+                category = (
+                    item.get("categoryDisplayName") or categories.get(item.get("category")) or item.get("category")
                 )
-        except Exception as e:
-            self.logger.error("Scrapling request failed: %s (%s)", e, url)
-            return None
+                if not isinstance(category, str) or not category:
+                    raise ValueError("Missing category")
+                if any(type(item.get(key)) is not int or item[key] < 0 for key in ("ratingUp", "viewCount")):
+                    raise ValueError("Missing article counters")
+                data[article_id] = {
+                    "article_id": article_id,
+                    "title": title.strip(),
+                    "category": category.strip(),
+                    "site_name": "아카라이브",
+                    "board_name": board_name,
+                    "writer_name": writer.strip(),
+                    "crawler_name": self.name,
+                    "url": f"https://arca.live/b/{slug}/{article_id}",
+                    "is_end": deal["isClosed"],
+                    "extra": {
+                        "recommend": str(item["ratingUp"]),
+                        "view": str(item["viewCount"]),
+                        "price": self._money(deal["price"]),
+                        "delivery": self._money(deal["delivery"], delivery=True),
+                    },
+                }
+            return data
+        except (ValueError, TypeError, KeyError, AttributeError, InvalidOperation):
+            # Partial snapshots would make BotManager delete still-existing posts.
+            self.logger.error("Invalid app API deal snapshot; keeping previous articles")
+            return {}
 
-        if response.status != 200:
-            if response.status != self._prev_status_by_url.get(url, 200):
-                self.logger.error("Scrapling response error: %s (%s)", response.status, url)
-                await self.dump_scrapling_response(response)
-            else:
-                self.logger.info("Scrapling response error [skip]: %s (%s)", response.status, url)
-            self._prev_status_by_url[url] = response.status
-            return None
-
-        self._prev_status_by_url[url] = response.status
-        return response.html_content
-
-    async def dump_scrapling_response(self, response) -> None:
-        current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join("error", f"{current_datetime}_{self.name}.html")
-
-        if not os.path.exists("error"):
-            os.makedirs("error")
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(response.html_content)
-
-    async def close(self):
-        try:
-            async with self._scrapling_session_lock:
-                if self._scrapling_session_started and self._scrapling_session is not None:
-                    await self._close_scrapling_session(self._scrapling_session)
-                    self._scrapling_session_started = False
-        finally:
-            await super().close()
+    async def get(self) -> ArticleCollection:
+        responses = await asyncio.gather(*(self.request(url) for url in self.url_list), return_exceptions=True)
+        data = ArticleCollection()
+        for response in responses:
+            if not isinstance(response, str):
+                return ArticleCollection()
+            articles = await self.parsing(response)
+            if not articles:
+                return ArticleCollection()
+            # Overlapping filters can return the same post at slightly different
+            # times. Merge those; only conflicting channel identities are unsafe.
+            if any(data[key]["url"] != articles[key]["url"] for key in data.keys() & articles.keys()):
+                return ArticleCollection()
+            data.update(articles)
+        return data
 
 
 class ArcaLiveCrawlerV15(ArcaLiveCrawler):

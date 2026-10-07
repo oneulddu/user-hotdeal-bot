@@ -24,7 +24,6 @@ async def main(module_name: str, detail: bool = False):
         crawler_instance = crawler.ArcaLiveCrawlerV2(
             "arcalive_hotdeal_v2",
             ["https://arca.live/b/hotdeal"],
-            cookie_env="ARCALIVE_COOKIE",
         )
     elif module_name == "arca_v15":
         crawler_instance = crawler.ArcaLiveCrawlerV15(

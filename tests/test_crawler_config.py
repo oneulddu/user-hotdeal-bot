@@ -10,30 +10,6 @@ from src import crawler
 from src.crawler import base_crawler
 
 
-class FakeScraplingResponse:
-    status = 200
-    html_content = "<html><body>ok</body></html>"
-
-
-class FakeScraplingSession:
-    def __init__(self):
-        self.started = False
-        self.closed = False
-        self.fetch_url = None
-        self.fetch_kwargs = None
-
-    async def start(self):
-        self.started = True
-
-    async def fetch(self, url, **kwargs):
-        self.fetch_url = url
-        self.fetch_kwargs = kwargs
-        return FakeScraplingResponse()
-
-    async def close(self):
-        self.closed = True
-
-
 class FakeCurlResponse:
     status_code = 200
     text = "<html><body>ok</body></html>"
@@ -368,67 +344,6 @@ async def test_dump_http_response_keeps_only_recent_error_files(tmp_path, monkey
     assert len(dumps) == 50
     assert "20000101_000000_dummy.html" not in dumps
     assert "20000101_000001_dummy.html" not in dumps
-
-
-@pytest.mark.asyncio
-async def test_arcalive_v2_uses_scrapling_session_options():
-    fake_session = FakeScraplingSession()
-    crawler_instance = crawler.ArcaLiveCrawlerV2(
-        "arcalive_hotdeal_v2",
-        ["https://arca.live/b/hotdeal"],
-        request_headers={"Referer": "https://arca.live/b/hotdeal", "User-Agent": "Custom UA"},
-        cookie="foo=bar",
-        scrapling_session=fake_session,
-    )
-
-    html = await crawler_instance.request("https://arca.live/b/hotdeal")
-    await crawler_instance.close()
-
-    assert html == FakeScraplingResponse.html_content
-    assert fake_session.started is True
-    assert fake_session.closed is True
-    assert fake_session.fetch_url == "https://arca.live/b/hotdeal"
-    assert fake_session.fetch_kwargs["google_search"] is False
-    assert fake_session.fetch_kwargs["solve_cloudflare"] is True
-    assert fake_session.fetch_kwargs["wait_selector"] == ".list-table"
-    assert fake_session.fetch_kwargs["extra_headers"] == {
-        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-        "Referer": "https://arca.live/b/hotdeal",
-    }
-    assert crawler_instance._scrapling_session is fake_session
-
-
-@pytest.mark.asyncio
-async def test_arcalive_v2_builds_stealth_session_with_persistent_profile(monkeypatch):
-    created_kwargs = {}
-
-    class FakeStealthSession(FakeScraplingSession):
-        def __init__(self, **kwargs):
-            super().__init__()
-            created_kwargs.update(kwargs)
-
-    monkeypatch.setattr(crawler.arcalive, "AsyncStealthySession", FakeStealthSession)
-    monkeypatch.setenv("ARCALIVE_SCRAPLING_TIMEOUT_MS", "1234")
-    monkeypatch.setenv("ARCALIVE_SCRAPLING_WAIT_MS", "567")
-
-    crawler_instance = crawler.ArcaLiveCrawlerV2(
-        "arcalive_hotdeal_v2",
-        ["https://arca.live/b/hotdeal"],
-        cookie="foo=bar",
-    )
-
-    await crawler_instance.request("https://arca.live/b/hotdeal")
-    await crawler_instance.close()
-
-    assert created_kwargs["headless"] is True
-    assert created_kwargs["disable_resources"] is False
-    assert created_kwargs["solve_cloudflare"] is True
-    assert created_kwargs["user_data_dir"] == "./data/scrapling-arcalive"
-    assert created_kwargs["hide_canvas"] is True
-    assert created_kwargs["block_webrtc"] is True
-    assert created_kwargs["cookies"] == [{"name": "foo", "value": "bar", "url": "https://arca.live/b/hotdeal"}]
-    assert crawler_instance._scrapling_session.fetch_kwargs["timeout"] == 1234
-    assert crawler_instance._scrapling_session.fetch_kwargs["wait"] == 567
 
 
 @pytest.mark.asyncio

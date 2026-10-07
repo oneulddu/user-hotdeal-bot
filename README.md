@@ -105,7 +105,6 @@ Compose를 쓰지 않을 때는 **마이그레이션 → 크롤러 → (선택) 
 ```bash
 # 0) 이미지 빌드
 docker build -t user-hotdeal-bot:crawler --target crawler .
-docker build -t user-hotdeal-bot:crawler-scrapling --target crawler-scrapling .  # 아카라이브 v2 실험용
 docker build -t user-hotdeal-bot:api --target api .
 
 # 1) DB 마이그레이션 (최초 1회 및 스키마 변경 시)
@@ -166,7 +165,7 @@ uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000   # API 서버
 `headers`, `cookie`/`cookie_env` 설정을 요청마다 적용하고 응답 쿠키는 다음 요청에 승계하지 않습니다.
 전송 실패는 최대 2회 시도하며, 아래의 Quasarzone 응답 대기 정책도 유지합니다.
 
-일반 크롤러와 아카라이브 V1.5는 `proxy`를 설정해도 기본적으로 서버 IP로 먼저 접속합니다
+일반 크롤러와 아카라이브 V1.5/V2는 `proxy`를 설정해도 기본적으로 서버 IP로 먼저 접속합니다
 (`proxy_mode: fallback`). 직접 접속 중에는 환경 프록시도 사용하지 않습니다.
 403 또는 확인된 HTTP 200 차단 페이지가 오면 프록시로 1회 요청합니다. 연결 오류·타임아웃은
 직접 접속을 총 2회 시도한 뒤 프록시로 1회 요청합니다. 프록시에서 정상 응답을 받으면
@@ -195,39 +194,42 @@ Quasarzone 크롤러는 HTTP 403/429가 반복될 때 5분, 30분, 2시간, 12�
 요청 간격을 늘립니다. 접근이 계속 차단되는 서버에서는 무리하게 재시도하지 말고
 해당 크롤러를 `enabled: false`로 두거나 정상적인 접근 경로를 준비한 뒤 다시 켜세요.
 
-아카라이브의 기본 크롤러도 공유 `curl_cffi` 클라이언트를 사용합니다. V1.5는 전용 curl 세션과
-기존 `ARCALIVE_CURL_*` 설정을 유지하며, V2는 브라우저를 사용하는 실험용 Scrapling 크롤러입니다.
-V1.5와 V2의 전용 요청 경로에는 위의 공유 HTTP 클라이언트 설정 대신 각 구현의 시간 제한과 DNS 동작이 적용됩니다.
-V1.5는 기존 `ARCALIVE_CURL_TIMEOUT`(기본 30초)을 각 전송 시도에 적용합니다.
-실험용 V2는 브라우저 세션에 고정한 프록시를 사용하므로 `proxy_mode: always`만 지원하며 이것이 기본값입니다.
+아카라이브 V2(`ArcaLiveCrawlerV2`)는 앱 API의 JSON 목록을 수집합니다. 브라우저 실행이나
+Scrapling 설치 없이 기본 `crawler` 이미지로 동작하며, 다른 크롤러와 같은 공유 HTTP 클라이언트를
+사용합니다. 기존 HTML 크롤러와 V1.5도 유지됩니다. V1.5만 전용 curl 세션과
+`ARCALIVE_CURL_TIMEOUT`(기본 30초)을 사용합니다.
+
+**전환할 때 기존 설정 키·프록시·url_list를 유지하고 `crawler_name`만 바꾸세요.**
+설정 키를 바꾸면 기존 알림 캐시와 메시지 매핑을 이어받지 못합니다. 같은 게시판의 V1/V1.5/V2를
+동시에 켜지 마세요. 기존 Scrapling V2의 클래스명은 앱 API V2로 대체되며,
+`ARCALIVE_SCRAPLING_*` 설정과 `crawler-scrapling` Docker 타깃은 제거되었습니다.
 
 ```yaml
 crawlers:
-  arcalive_hotdeal:
-    enabled: false
-  arcalive_hotdeal_v15:
-    url_list:
-    - https://arca.live/b/hotdeal
-    crawler_name: ArcaLiveCrawlerV15
-    enabled: true
-    # 필요 시 프록시를 추가
-    # proxy: http://127.0.0.1:8080
-    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시 사용 (항상 쓰려면 always)
-  arcalive_hotdeal_v2:
+  arcalive_hotdeal:  # 기존에 사용하던 설정 키 유지
     url_list:
     - https://arca.live/b/hotdeal
     crawler_name: ArcaLiveCrawlerV2
-    enabled: false
-    # 필요 시 같은 실행 환경에서 얻은 쿠키 또는 프록시를 추가
-    # cookie_env: ARCALIVE_COOKIE
+    enabled: true
+    # 기존 프록시가 있다면 그대로 유지
     # proxy: http://127.0.0.1:8080
+    # proxy_mode: fallback  # 기본값. 직접 접속 실패 시 프록시 사용
 ```
 
-Docker에서는 브라우저 의존성이 포함된 이미지를 빌드해야 합니다.
+공개 핫딜 조회에는 로그인 토큰이 필요 없습니다. API도 운영 환경에 따라 403으로 차단될 수 있어
+프록시가 필요할 수 있습니다. 기본값 `proxy_mode: fallback`은 직접 접속 실패 시 기존 프록시로 전환하고,
+명시적으로 `always`를 지정하면 설정된 프록시를 처음부터 사용합니다. 앱 User-Agent와 장치 토큰은
+자동 설정되며, 명시한 `headers`는 대소문자 구분 없이 기본 헤더를 덮어씁니다.
 
-```bash
-docker build -t user-hotdeal-bot:crawler-scrapling --target crawler-scrapling .
-```
+URL은 `https://arca.live/b/{채널}` 형식이며 `category`, `target`, `keyword` 필터와 `p=1`을
+지원합니다. 그 밖의 쿼리·페이지는 조용히 무시하지 않고 초기화 오류로 처리하므로 시작/설정 재로드
+전에 제거해야 합니다. 목록 첫 페이지만 요청하며, 채널 이름은 최초 조회 후 메모리에 캐시합니다.
+채널 정보 조회 실패 시 핫딜 채널 이름 또는 채널 식별자를 사용하고 다음 회차에 다시 시도합니다.
+
+가격·배송비 표시와 게시글 URL은 기존 형식을 유지합니다. 목록의 명시적 공지는 제외하고,
+딜 필드가 누락되거나 여러 URL 중 하나라도 실패하면 해당 회차 전체를 건너뛰어 기존 글의 오삭제를
+막습니다. HTML에 삽입되는 광고는 API 목록과 다를 수 있습니다. 전환 직후 기존 광고 글이 추적
+범위 밖으로 빠지거나 삭제된 것으로 분류될 수 있으며, 일반 게시글의 가격·종료 상태 추적은 유지됩니다.
 
 ### 주요 환경 변수
 
@@ -342,8 +344,7 @@ aws s3 cp s3://<bucket>/<prefix>/<file>.sql.gz - | gunzip | mysql -h <host> -u <
 설정 재로드와 종료는 진행 중인 크롤링·DB 저장·알림 큐 등록이 끝난 뒤 수행합니다.
 덤프를 저장할 때 대기 알림 큐를 유지하며, 재로드나 덤프 저장 실패 후에는 소비 작업을 재개합니다.
 Docker Compose 예제의 크롤러 종료 유예시간(`stop_grace_period`)은 2분입니다.
-Scrapling은 브라우저 초기화·페이지 대기·재시도를 포함한 요청 전체를 기본 100초로 제한합니다.
-`ARCALIVE_SCRAPLING_TOTAL_TIMEOUT`(초)을 늘린다면 종료 유예시간도 전체 요청 상한과 정리·저장 시간을 고려해 늘리세요.
+V2도 공유 HTTP 클라이언트의 요청 시간 제한을 따릅니다. 종료 유예시간은 진행 중인 수집과 알림 저장을 위해 유지합니다.
 단독 Docker 실행에서도 `docker stop --timeout 120 <컨테이너명>`처럼 충분한 종료 시간을 지정하세요.
 
 성능 개선 내용과 재현 가능한 검증 결과는 [성능 검토 기록](PERFORMANCE.md)에 정리했습니다.
@@ -376,7 +377,7 @@ uv run ruff format # 포맷
 | --- | --- |
 | 언어 | Python 3.11+ |
 | 패키지 관리 | uv |
-| 크롤링 | aiohttp, BeautifulSoup4, curl_cffi, Scrapling |
+| 크롤링 | aiohttp, BeautifulSoup4, curl_cffi |
 | 메신저 | python-telegram-bot 21+ |
 | API | FastAPI, Uvicorn, feedgen |
 | DB | SQLAlchemy 2.0(async), Alembic, SQLite / MySQL |
