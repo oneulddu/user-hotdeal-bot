@@ -371,7 +371,8 @@ async def test_close_continues_when_crawler_close_fails(monkeypatch):
     broken_crawler = BrokenCloseCrawler("broken", ["https://example.com"], session=session)
     manager.crawlers = {"broken": broken_crawler}
 
-    await manager.close()
+    with pytest.raises(ExceptionGroup, match="Application shutdown failed"):
+        await manager.close()
 
     assert broken_crawler.closed is True
     assert session.closed is True

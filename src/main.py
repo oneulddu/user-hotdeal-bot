@@ -5,7 +5,9 @@ import logging.config
 import os
 import signal
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 import logfire
@@ -320,21 +322,36 @@ class PersistenceManager:
                 if article_ids
             },
         }
-        tmp_file_path = f"{dump_file_path}.tmp"
+        destination = Path(dump_file_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp_file_path = None
         try:
-            with open(tmp_file_path, "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False
+            ) as f:
+                tmp_file_path = f.name
                 json.dump(dump, f, ensure_ascii=False, indent=2, default=bot.message_serializer)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_file_path, dump_file_path)
+            if os.name == "posix":
+                directory_fd = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         finally:
             if tmp_file_path and os.path.exists(tmp_file_path):
                 os.unlink(tmp_file_path)
 
 
 class BotManager:
-    def __init__(self, http_client: HttpClient | None = None):
+    def __init__(self, http_client: HttpClient | None = None, *, dump_file_path: str | None = None):
         self.logger = logging.getLogger("BotManager")
+        self.dump_file_path = dump_file_path or os.getenv("DUMP_FILE_PATH") or "dump.json"
+        self.crawlers: dict[str, crawler.BaseCrawler] = {}
+        self.bots: dict[str, bot.BaseBot] = {}
+        self.article_cache: dict[str, crawler.ArticleCollection] = {}
         self.closed = False
         self.persistence = PersistenceManager()
         self.article_tombstones: dict[str, set[int]] = {}
@@ -476,7 +493,7 @@ class BotManager:
             self.logger.info("Bot removed or disabled: %s (%s)", bot_name, bot_obj.cls_name)
         self.logger.info("%d bot(s) initialized", len(self.bots))
 
-    async def load(self, config_file_path: str = "config.yaml", dump_file_path: str = "dump.json"):
+    async def load(self, config_file_path: str = "config.yaml", dump_file_path: str | None = None):
         """주어진 경로의 설정 파일로부터 설정 및 데이터 로드
 
         Args:
@@ -485,7 +502,9 @@ class BotManager:
         """
         # 설정 및 데이터 로드
         await self.load_config(config_file_path)
-        self.article_cache = await self.persistence.load_data(dump_file_path, self.crawlers, self.bots)
+        self.article_cache = await self.persistence.load_data(
+            self.dump_file_path if dump_file_path is None else dump_file_path, self.crawlers, self.bots
+        )
         self.article_tombstones = {
             crawler_name: set(article_ids) for crawler_name, article_ids in self.persistence.article_tombstones.items()
         }
@@ -518,7 +537,7 @@ class BotManager:
             bots = {}
         await self.init_bots(bots)
 
-    async def dump(self, dump_file_path: str = "dump.json", *, resume_consumers: bool = True):
+    async def dump(self, dump_file_path: str | None = None, *, resume_consumers: bool = True):
         """데이터를 지정한 경로의 json 파일에 저장
 
         Args:
@@ -530,7 +549,7 @@ class BotManager:
             await self.persistence.dump_data(
                 self.article_cache,
                 self.bots,
-                dump_file_path,
+                self.dump_file_path if dump_file_path is None else dump_file_path,
                 self.article_tombstones,
             )
             saved = True
@@ -807,10 +826,11 @@ class BotManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    async def run(self):
+    async def run(self, *, initialize: bool = True):
         """크롤링 및 메시지 전송 작업을 주어진 시간(60초)마다 한번씩 영원히 반복"""
-        with logfire.span("init_application"):
-            await self.init_session()
+        if initialize:
+            with logfire.span("init_application"):
+                await self.init_session()
         self.logger.info("Loop start")
         loop = asyncio.get_running_loop()
         while not self.closed:
@@ -819,36 +839,42 @@ class BotManager:
         self.logger.debug("Loop stop (bot closed)")
 
     @logfire.instrument("close_application")
-    async def close(self):
+    async def close(self, *, save_state: bool = True):
         """세션 닫기, 크롤러, 봇 닫기, 데이터 저장"""
         # Finish the current cache/DB/notification cycle before closing anything.
         async with self._run_lock:
-            await self._close_locked()
+            await self._close_locked(save_state=save_state)
 
-    async def _close_locked(self):
+    async def _close_locked(self, *, save_state: bool = True):
         if self.closed:
             self.logger.info("session already closed")
             return
         self.closed = True
         self.logger.info("session close start")
-        # 크롤러가 직접 소유한 HTTP 클라이언트 닫기
-        for k, cwr in self.crawlers.items():
-            self.logger.debug("crawler close: %s", k)
+        failures = []
+
+        async def finish(label, operation):
             try:
-                await cwr.close()
-            except Exception as e:
-                self.logger.warning("Crawler close failed: %s (%s)", k, e)
+                await operation
+            except Exception as error:
+                self.logger.error("%s failed: %s", label, error)
+                failures.append(error)
+
+        for name, cwr in self.crawlers.items():
+            await finish(f"Crawler close ({name})", cwr.close())
         if self.http_client is not None and not self.http_client.closed:
-            await self.http_client.close()
-        # 봇 세션 닫기
-        for bot_name, bot_instance in self.bots.items():
-            self.logger.debug("bot close: %s", bot_name)
-            await bot_instance.close()
-        # 데이터 저장
-        self.logger.info("data dump start")
-        await self.dump()
-        # DB 세션 닫기
-        await close_db()
+            await finish("HTTP client close", self.http_client.close())
+        for name, instance in self.bots.items():
+            await finish(f"Bot close ({name})", instance.close())
+        if save_state:
+            self.logger.info("data dump start: %s", self.dump_file_path)
+            await finish("Data dump", self.dump())
+        else:
+            self.logger.info("Startup incomplete; preserving existing dump")
+        # In particular, release aiosqlite worker threads even when saving fails.
+        await finish("Database close", close_db())
+        if failures:
+            raise ExceptionGroup("Application shutdown failed", failures)
         self.logger.info("session close / data dump end")
 
     async def reload(self):
@@ -866,57 +892,84 @@ class BotManager:
                     await bot_instance.check_consumer(no_warning=True)
 
 
-async def shutdown(sig: signal.Signals, bot: BotManager):
-    """프로그램 종료 시그널 (sigterm, sigint) 핸들러"""
-    logger_status.info("Received exit signal %s", sig.name)
+async def _run_application():
+    """Own startup, signal handling and shutdown until the final snapshot is saved."""
+    manager = BotManager()
     loop = asyncio.get_running_loop()
-    # cloasing bot
-    await bot.close()
-    # stop all tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
+    stopping = asyncio.Event()
+    initialized = False
+    reload_tasks: set[asyncio.Task] = set()
 
+    def request_shutdown(sig):
+        if not stopping.is_set():
+            logger_status.info("Received exit signal %s", sig.name)
+            stopping.set()
 
-async def reload(sig: signal.Signals, bot: BotManager):
-    """프로그램 재시작 시그널 (sighup) 핸들러"""
-    logger_status.info("Received reload signal %s", sig.name)
-    await bot.reload()
+    async def reload_config():
+        try:
+            await manager.reload()
+        except Exception:
+            logger_status.exception("Configuration reload failed")
+
+    def request_reload():
+        if initialized and not stopping.is_set():
+            task = asyncio.create_task(reload_config())
+            reload_tasks.add(task)
+            task.add_done_callback(reload_tasks.discard)
+
+    installed_signals = []
+    if sys.platform != "win32":
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, request_shutdown, sig)
+            installed_signals.append(sig)
+        loop.add_signal_handler(signal.SIGHUP, request_reload)
+        installed_signals.append(signal.SIGHUP)
+
+    startup = asyncio.create_task(manager.init_session())
+    stop_waiter = asyncio.create_task(stopping.wait())
+    running = None
+    try:
+        await asyncio.wait({startup, stop_waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if startup.done():
+            await startup
+            initialized = True
+        if initialized and not stopping.is_set():
+            running = asyncio.create_task(manager.run(initialize=False))
+            await asyncio.wait({running, stop_waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if running.done():
+                await running
+    finally:
+        # Startup owns loading the old snapshot. Never save partial startup state.
+        if not startup.done():
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+        started = time.monotonic()
+        try:
+            await manager.close(save_state=initialized)
+        finally:
+            tasks = [stop_waiter, *reload_tasks, *manager._bg_tasks]
+            if running is not None:
+                tasks.append(running)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for sig in installed_signals:
+                loop.remove_signal_handler(sig)
+            logger_status.info("Shutdown finished in %.3fs", time.monotonic() - started)
 
 
 def main():
-    loop = asyncio.new_event_loop()
-    bot = BotManager()
-    if sys.platform != "win32":
-        # shutdown (SIGTERM, SIGINT)
-        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown(signal.SIGTERM, bot)))
-        loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(shutdown(signal.SIGINT, bot)))
-        # reload (SIGHUP)
-        loop.add_signal_handler(signal.SIGHUP, lambda: asyncio.create_task(reload(signal.SIGHUP, bot)))
-
     logger_status.info("hotdeal bot v%s start!! (PID: %s)", __version__, os.getpid())
     logfire.info("Starting hotdeal bot", version=__version__, pid=os.getpid())
-
     try:
-        loop.run_until_complete(bot.run())
+        asyncio.run(_run_application())
     except KeyboardInterrupt:
-        print("keyboard interrupt")
-        logfire.warn("Bot stopped by keyboard interrupt")
-    except asyncio.CancelledError:
-        logfire.warn("Bot stopped by asyncio cancellation")
-        pass
+        logger_status.info("Bot interrupted")
+    except Exception:
+        logger_status.exception("Bot stopped with an error; shutdown state may not have been saved")
+        raise SystemExit(1)
     finally:
-        if sys.platform == "win32":
-            try:
-                with logfire.span("shutdown"):
-                    loop.run_until_complete(shutdown(signal.SIGINT, bot))
-            except asyncio.CancelledError:
-                pass
-        if not loop.is_closed():
-            loop.close()
-    logger_status.info("hotdeal bot v%s stopped!!", __version__)
-    logfire.info("Hotdeal bot stopped", version=__version__)
+        logger_status.info("hotdeal bot v%s stopped!!", __version__)
 
 
 if __name__ == "__main__":
