@@ -424,3 +424,25 @@ async def test_image_signature_refresh_does_not_edit_or_resend_messages():
     client.articles[0]["thumbnailUrl"] = "//ac.arca.live/a.jpg?key=new&type=list"
     assert await manager._crawling("test", cwr) == {"new": [], "update": [], "remove": []}
     assert manager.article_cache["test"][100]["extra"]["image_url"].endswith("key=new")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mark, expected", [("best", True), ("image", False), ("", False)])
+async def test_engagement_comes_from_list_without_guessing_recommendation_threshold(mark, expected):
+    client = ApiClient([deal(commentCount=0, ratingUp=100, mark=mark)])
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=client)
+    extra = (await cwr.get())[100]["extra"]
+    assert extra["comment_count"] == 0
+    assert extra["recommend"] == "100"
+    assert extra["is_best"] is expected
+    assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("comments, mark", [(None, None), (-1, {}), (True, []), ("17", 1)])
+async def test_invalid_optional_engagement_does_not_drop_deals(comments, mark):
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=ApiClient([deal(commentCount=comments, mark=mark)]))
+    articles = await cwr.get()
+    assert list(articles) == [100]
+    assert "comment_count" not in articles[100]["extra"]
+    assert "is_best" not in articles[100]["extra"]

@@ -23,6 +23,7 @@ from src.db import ArticleRepository, close_db, get_async_session, get_engine, g
 from src.http_client import HttpClient, create_default_http_client
 
 MAX_ARTICLE_TOMBSTONES = 4_096
+ENGAGEMENT_UPDATE_INTERVAL_SECONDS = 5 * 60
 
 
 def load_config_file(config_path: str = "config.yaml") -> "Config":
@@ -356,6 +357,8 @@ class BotManager:
         self.persistence = PersistenceManager()
         self.article_tombstones: dict[str, set[int]] = {}
         self._db_backfilled_article_keys: set[tuple[str, int]] = set()
+        # Last snapshot scheduled for notification, separate from the per-minute article cache.
+        self._engagement_state: dict[str, dict[int, tuple[float, tuple | None]]] = {}
         self._run_lock = asyncio.Lock()
         self._bg_tasks: set[asyncio.Task[None]] = set()
         self.http_client = http_client
@@ -505,6 +508,7 @@ class BotManager:
         self.article_cache = await self.persistence.load_data(
             self.dump_file_path if dump_file_path is None else dump_file_path, self.crawlers, self.bots
         )
+        self._engagement_state.clear()
         self.article_tombstones = {
             crawler_name: set(article_ids) for crawler_name, article_ids in self.persistence.article_tombstones.items()
         }
@@ -558,6 +562,13 @@ class BotManager:
                 for bot_instance in running_bots:
                     await bot_instance.check_consumer(no_warning=True)
 
+    @staticmethod
+    def _engagement(article: crawler.BaseArticle) -> tuple | None:
+        extra = article.get("extra", {})
+        if "comment_count" not in extra and "is_best" not in extra:
+            return None
+        return extra.get("recommend"), extra.get("comment_count"), extra.get("is_best")
+
     async def _crawling(self, name: str, cwr: crawler.BaseCrawler) -> CrawlingResult:
         """크롤러 객체를 받아 크롤링 수행, 이후 새로운 게시글, 업데이트된 게시글, 삭제된 게시글을 각각 반환
 
@@ -579,6 +590,11 @@ class BotManager:
         id_min: int = min(recent_data.keys())
         self.logger.debug("%s: %d article(s) crawled", cwr.__class__.__name__, len(recent_data))
         self.logger.debug("%s: article_id range: [%d, %d]", cwr.__class__.__name__, id_min, max(recent_data.keys()))
+        now = time.monotonic()
+        engagement_state = self._engagement_state.setdefault(name, {})
+        for article_id in list(engagement_state):
+            if article_id not in recent_data:
+                del engagement_state[article_id]
 
         # 초기화
         if name not in self.article_cache:
@@ -586,6 +602,9 @@ class BotManager:
         tombstones = self.article_tombstones.setdefault(name, set())
         if not self.article_cache[name]:
             self.article_cache[name].update(recent_data)
+            for article_id, article in recent_data.items():
+                if (stats := self._engagement(article)) is not None:
+                    engagement_state[article_id] = (now, stats)
             tombstones.difference_update([article_id for article_id in tombstones if article_id < id_min])
             self.logger.info("%s: Article cache initialized, skip crawling", cwr.__class__.__name__)
             return result
@@ -632,20 +651,35 @@ class BotManager:
         # 기존 게시글 기준으로 탐색
         for article_id, article in self.article_cache[name].items():
             new_article = recent_data[article_id]
+            stats = self._engagement(new_article)
+            stats_due = False
+            if stats is not None:
+                # After a restart, refresh once within five minutes even if the dump's
+                # article counts were newer than the last delivered caption.
+                last_at, last_stats = engagement_state.setdefault(article_id, (now, None))
+                previous_stats = self._engagement(article)
+                stats_due = (
+                    previous_stats is None
+                    or previous_stats[2] != stats[2]
+                    or (stats != last_stats and now - last_at >= ENGAGEMENT_UPDATE_INTERVAL_SECONDS)
+                )
             # 메시지 업데이트가 필요한 경우 (품절, 제목 변경, 가격 변경 등)
-            if article["is_end"] != new_article["is_end"]:
-                # self.logger.debug("Status update detected: {title} ({url}) -> {status}".format(status=new_article["is_end"], **article))
+            if (
+                article["is_end"] != new_article["is_end"]
+                or article["title"] != new_article["title"]
+                or article.get("extra", {}).get("price") != new_article.get("extra", {}).get("price")
+                or stats_due
+            ):
                 result["update"].append(article)
-            elif article["title"] != new_article["title"]:
-                # crawling 메서드의 로깅과 중복돼서 주석 처리
-                # self.logger.debug("Title update detect: {title} ({url}) -> {new_title}".format(new_title=new_article["title"], **article))
-                result["update"].append(article)
-            elif article.get("extra", {}).get("price") != new_article.get("extra", {}).get("price"):
-                result["update"].append(article)
+                if stats is not None:
+                    engagement_state[article_id] = (now, stats)
             article.update(new_article)
 
         # 오래된 unseen 글은 알리지 않되 캐시에 넣어, 캐시가 비어 다음 신규 글까지 누락되는 일을 막는다.
         self.article_cache[name].update(recent_data)
+        for article_id, article in recent_data.items():
+            if (stats := self._engagement(article)) is not None:
+                engagement_state.setdefault(article_id, (now, stats))
         return result
 
     async def crawling(self) -> CrawlingResult:

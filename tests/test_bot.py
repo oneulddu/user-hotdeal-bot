@@ -315,3 +315,28 @@ def test_photo_caption_limit_preserves_unicode_and_markdown(closed):
     assert "\ufffd" not in plain
     assert caption == telegram_escape_markdown(plain, version=2)
     assert len(TelegramBot._make_message(None, article)["text"]) > len(kwargs["caption"])
+
+
+@pytest.mark.parametrize("photo", [False, True])
+@pytest.mark.parametrize("best", [False, True])
+@pytest.mark.parametrize("comments, recommend", [(0, "0"), (17, "8")])
+def test_engagement_footer_matches_preview_and_keeps_zero_counts(photo, best, comments, recommend):
+    article = make_article()
+    article["extra"] = {"comment_count": comments, "recommend": recommend, "is_best": best}
+    kwargs = TelegramBot._make_message(None, article, photo=photo)
+    footer = f"👍 {recommend} · 💬 {comments}" + (" · 🔥 초핫딜" if best else "")
+    assert kwargs["caption" if photo else "text"] == "\\[category\\] Article 1\n\n" + footer
+    assert kwargs["reply_markup"].inline_keyboard[0][0].url == article["url"]
+
+
+def test_closed_long_photo_keeps_engagement_footer_outside_strikethrough():
+    article = make_article()
+    article["title"] = "🔔_\\" * 400
+    article["is_end"] = True
+    article["extra"] = {"comment_count": 17, "recommend": "8", "is_best": True}
+    caption = TelegramBot._make_message(None, article, photo=True)["caption"]
+    body, footer = caption.split("\n\n")
+    assert body.startswith("~") and body.endswith("…~")
+    assert footer == "👍 8 · 💬 17 · 🔥 초핫딜"
+    plain = re.sub(r"\\(.)", r"\1", body[1:-1]) + "\n\n" + footer
+    assert len(plain.encode("utf-16-le")) <= 2048

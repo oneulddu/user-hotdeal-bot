@@ -389,6 +389,10 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
                 }
                 if image_url := self._image_url(item.get("thumbnailUrl")):
                     data[article_id]["extra"]["image_url"] = image_url
+                if type(item.get("commentCount")) is int and item["commentCount"] >= 0:
+                    data[article_id]["extra"]["comment_count"] = item["commentCount"]
+                if isinstance(item.get("mark"), str):
+                    data[article_id]["extra"]["is_best"] = item["mark"] == "best"
             return data
         except (ValueError, TypeError, KeyError, AttributeError, InvalidOperation):
             # Partial snapshots would make BotManager delete still-existing posts.

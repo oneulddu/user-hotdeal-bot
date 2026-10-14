@@ -477,12 +477,25 @@ class TelegramBot(BaseBot[telegram.Message]):
                 text += "\n{price} / {delivery} (직배 가능)".format(**d["extra"])
             else:
                 text += "\n{price} / {delivery} (직배 불가능)".format(**d["extra"])
-        if photo and len(text.encode("utf-16-le")) > 2048:
+        stats = []
+        extra = d["extra"]
+        # These fields opt in to the ArcaLive engagement footer; other crawlers keep their format.
+        if "comment_count" in extra or "is_best" in extra:
+            if extra.get("recommend") is not None:
+                stats.append(f"👍 {extra['recommend']}")
+            if type(extra.get("comment_count")) is int and extra["comment_count"] >= 0:
+                stats.append(f"💬 {extra['comment_count']}")
+            if extra.get("is_best") is True:
+                stats.append("🔥 초핫딜")
+        footer = "\n\n" + " · ".join(stats) if stats else ""
+        text_limit = 2048 - len(footer.encode("utf-16-le"))
+        if photo and len(text.encode("utf-16-le")) > text_limit:
             # Truncate before Markdown escaping, without splitting an emoji or escape sequence.
-            text = text.encode("utf-16-le")[:2046].decode("utf-16-le", errors="ignore") + "…"
+            text = text.encode("utf-16-le")[: text_limit - 2].decode("utf-16-le", errors="ignore") + "…"
         md = escape_markdown(text)
         if d["is_end"]:
             md = f"~{md}~"
+        md += escape_markdown(footer)
         btn = [[telegram.InlineKeyboardButton("자세히 보기 ({site_name} {board_name})".format(**d), d["url"])]]
         result = {
             "caption" if photo else "text": md,
