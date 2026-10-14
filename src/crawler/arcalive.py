@@ -315,6 +315,31 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
             and entry["displayName"].strip()
         }
 
+    @staticmethod
+    def _image_url(thumbnail_url: object) -> str | None:
+        if not isinstance(thumbnail_url, str) or not thumbnail_url or any(c.isspace() for c in thumbnail_url):
+            return None
+        url = "https:" + thumbnail_url if thumbnail_url.startswith("//") else thumbnail_url
+        try:
+            parts = urlsplit(url)
+            if (
+                parts.scheme != "https"
+                or parts.hostname not in {"ac.arca.live", "ac-p.arca.live", "ac-o.arca.live"}
+                or parts.username is not None
+                or parts.password is not None
+                or parts.port is not None
+                or not parts.path
+                or parts.fragment
+            ):
+                return None
+        except ValueError:
+            return None
+        # Keep the signed query byte-for-byte; re-encoding expires/key can invalidate it.
+        query = "&".join(
+            field for field in parts.query.split("&") if parse_qsl(field, keep_blank_values=True) != [("type", "list")]
+        )
+        return parts._replace(query=query).geturl()
+
     async def parsing(self, body: str) -> dict[int, BaseArticle]:
         try:
             payload = json.loads(body)
@@ -362,6 +387,8 @@ class ArcaLiveCrawlerV2(ArcaLiveCrawler):
                         "delivery": self._money(deal["delivery"], delivery=True),
                     },
                 }
+                if image_url := self._image_url(item.get("thumbnailUrl")):
+                    data[article_id]["extra"]["image_url"] = image_url
             return data
         except (ValueError, TypeError, KeyError, AttributeError, InvalidOperation):
             # Partial snapshots would make BotManager delete still-existing posts.

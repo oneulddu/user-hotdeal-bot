@@ -1,10 +1,11 @@
 import asyncio
 import logging
+import re
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram.error import RetryAfter
+from telegram.error import BadRequest, RetryAfter, TimedOut
 from telegram.helpers import escape_markdown as telegram_escape_markdown
 
 from src import crawler
@@ -161,7 +162,7 @@ def test_retry_after_seconds(value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["send", "edit"])
+@pytest.mark.parametrize("operation", ["send", "edit", "edit_photo"])
 @pytest.mark.parametrize("use_timedelta", [False, True])
 async def test_telegram_retries_with_seconds(monkeypatch, operation, use_timedelta):
     monkeypatch.setenv("PTB_TIMEDELTA", "true" if use_timedelta else "false")
@@ -178,7 +179,11 @@ async def test_telegram_retries_with_seconds(monkeypatch, operation, use_timedel
             assert await bot._send(article) is message
             assert await bot.get_msg_obj(article) is message
         else:
-            message.edit_text = call
+            if operation == "edit_photo":
+                message.photo = (object(),)
+                message.edit_caption = call
+            else:
+                message.edit_text = call
             await bot.set_msg_obj(article, message)
             await bot._edit(article)
     finally:
@@ -186,3 +191,127 @@ async def test_telegram_retries_with_seconds(monkeypatch, operation, use_timedel
 
     sleep.assert_awaited_once_with(2.0)
     assert call.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_photo_send_keeps_caption_button_and_message_cache():
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    bot.bot = AsyncMock()
+    article = make_article()
+    article["extra"] = {"image_url": "https://ac.arca.live/a.jpg?key=signed", "price": "1,000원", "delivery": "무료"}
+    try:
+        message = await bot._send(article)
+        assert await bot.get_msg_obj(article) is message
+        kwargs = bot.bot.send_photo.call_args.kwargs
+        assert kwargs["photo"] == article["extra"]["image_url"]
+        assert kwargs["caption"] == "\\[category\\] Article 1\n1,000원 / 무료"
+        assert kwargs["reply_markup"].inline_keyboard[0][0].url == article["url"]
+        assert "text" not in kwargs
+        bot.bot.send_message.assert_not_awaited()
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_photo_falls_back_to_text_and_caches_text_message():
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    bot.bot = AsyncMock()
+    bot.bot.send_photo.side_effect = BadRequest("Failed to get HTTP URL content")
+    article = make_article()
+    article["extra"]["image_url"] = "https://ac.arca.live/expired.jpg"
+    try:
+        message = await bot._send(article)
+        bot.bot.send_photo.assert_awaited_once()
+        bot.bot.send_message.assert_awaited_once_with(chat_id="target", **bot._make_message(article))
+        assert message is bot.bot.send_message.return_value
+        assert await bot.get_msg_obj(article) is message
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_photo_timeout_does_not_send_a_duplicate_text_notification():
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    bot.bot = AsyncMock()
+    bot.bot.send_photo.side_effect = TimedOut()
+    article = make_article()
+    article["extra"]["image_url"] = "https://ac.arca.live/a.jpg"
+    try:
+        assert await bot._send(article) is None
+        assert await bot.get_msg_obj(article) is None
+        bot.bot.send_photo.assert_awaited_once()
+        bot.bot.send_message.assert_not_awaited()
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_photo_rate_limit_retries_photo(monkeypatch):
+    sleep = AsyncMock()
+    monkeypatch.setattr("src.bot.asyncio.sleep", sleep)
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    bot.bot = AsyncMock()
+    message = FakeMessage()
+    bot.bot.send_photo.side_effect = [RetryAfter(2), message]
+    article = make_article()
+    article["extra"]["image_url"] = "https://ac.arca.live/a.jpg"
+    try:
+        assert await bot._send(article) is message
+        sleep.assert_awaited_once_with(2)
+        assert bot.bot.send_photo.await_count == 2
+        bot.bot.send_message.assert_not_awaited()
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("photo", [False, True])
+async def test_restored_message_edits_match_actual_message_type(photo):
+    bot = TelegramBot("telegram", token="fake-token", target="target")
+    bot.bot = AsyncMock(spec=type(bot.bot))
+    article = make_article()
+    article["is_end"] = True
+    article["extra"] = {"image_url": "https://ac.arca.live/expired.jpg", "price": "900원", "delivery": "무료"}
+    saved = {"message_id": 123, "date": 1, "chat": {"id": 456, "type": "private"}}
+    if photo:
+        saved.update(
+            photo=[{"file_id": "photo", "file_unique_id": "unique", "width": 1280, "height": 751}], caption="old"
+        )
+    else:
+        saved["text"] = "old"
+    try:
+        await bot.from_dict({"cache": {"dummy": {"1": saved}}, "queue": []})
+        await bot._edit(article)
+        if photo:
+            kwargs = bot.bot.edit_message_caption.call_args.kwargs
+            assert kwargs["caption"] == "~\\[category\\] Article 1\n900원 / 무료~"
+            bot.bot.edit_message_text.assert_not_awaited()
+        else:
+            kwargs = bot.bot.edit_message_text.call_args.kwargs
+            assert kwargs["text"] == "~\\[category\\] Article 1\n900원 / 무료~"
+            bot.bot.edit_message_caption.assert_not_awaited()
+        assert kwargs["reply_markup"].inline_keyboard[0][0].url == article["url"]
+        bot.bot.send_photo.assert_not_awaited()
+        bot.bot.edit_message_media.assert_not_awaited()
+        await bot._delete(article)
+        bot.bot.delete_message.assert_awaited_once()
+    finally:
+        await bot.close()
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_photo_caption_limit_preserves_unicode_and_markdown(closed):
+    article = make_article()
+    article["title"] = "🔔_\\" * 400
+    article["is_end"] = closed
+    kwargs = TelegramBot._make_message(None, article, photo=True)
+    caption = kwargs["caption"]
+    if closed:
+        assert caption.startswith("~") and caption.endswith("~")
+        caption = caption[1:-1]
+    plain = re.sub(r"\\(.)", r"\1", caption)
+    assert plain.endswith("…")
+    assert len(plain.encode("utf-16-le")) <= 2048
+    assert "\ufffd" not in plain
+    assert caption == telegram_escape_markdown(plain, version=2)
+    assert len(TelegramBot._make_message(None, article)["text"]) > len(kwargs["caption"])

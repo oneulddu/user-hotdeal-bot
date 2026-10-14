@@ -362,3 +362,65 @@ async def test_invalid_optional_category_metadata_does_not_poison_cache(categori
     for _ in range(2):
         assert (await cwr.get())[100]["category"] == "PC/하드웨어"
     assert cwr._channels["hotdeal"]["categoryData"] == []
+
+
+@pytest.mark.asyncio
+async def test_photo_url_uses_list_response_and_preserves_signed_query():
+    thumbnail = "//ac.arca.live/deal.jpg?expires=123&key=a%2fb%2B+c&type=list&other=%26&type=orig"
+    client = ApiClient([deal(thumbnailUrl=thumbnail)])
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=client)
+    articles = await cwr.get()
+    assert articles[100]["extra"]["image_url"] == (
+        "https://ac.arca.live/deal.jpg?expires=123&key=a%2fb%2B+c&other=%26&type=orig"
+    )
+    assert len(client.calls) == 2  # list + channel metadata only; no detail/image request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "thumbnail",
+    [
+        None,
+        "",
+        {},
+        123,
+        "/deal.jpg",
+        "http://ac.arca.live/deal.jpg",
+        "https://evil.example/deal.jpg",
+        "https://ac.arca.live.evil.example/deal.jpg",
+        "https://user@ac.arca.live/deal.jpg",
+        "https://ac.arca.live:bad/deal.jpg",
+        "https://[invalid/deal.jpg",
+        "//ac.arca.live/a\nb.jpg",
+    ],
+)
+async def test_invalid_optional_thumbnail_keeps_the_deal(thumbnail):
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=ApiClient([deal(thumbnailUrl=thumbnail)]))
+    articles = await cwr.get()
+    assert list(articles) == [100]
+    assert "image_url" not in articles[100]["extra"]
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://ac.arca.live/deal.jpg?type=list", "https://ac.arca.live/deal.jpg"),
+        ("//ac.arca.live/deal.jpg?type=list&key=x&type=list", "https://ac.arca.live/deal.jpg?key=x"),
+        ("//ac.arca.live/deal.jpg?key=x&%74ype=l%69st", "https://ac.arca.live/deal.jpg?key=x"),
+        ("https://ac.arca.live/deal.jpg?type=orig&key=x", "https://ac.arca.live/deal.jpg?type=orig&key=x"),
+    ],
+)
+def test_image_url_removes_only_list_size(url, expected):
+    assert ArcaLiveCrawlerV2._image_url(url) == expected
+
+
+@pytest.mark.asyncio
+async def test_image_signature_refresh_does_not_edit_or_resend_messages():
+    client = ApiClient([deal(thumbnailUrl="//ac.arca.live/a.jpg?key=old&type=list")])
+    cwr = ArcaLiveCrawlerV2("test", [URL], client=client)
+    manager = BotManager()
+    manager.bots = {}
+    manager.article_cache = {"test": await cwr.get()}
+    client.articles[0]["thumbnailUrl"] = "//ac.arca.live/a.jpg?key=new&type=list"
+    assert await manager._crawling("test", cwr) == {"new": [], "update": [], "remove": []}
+    assert manager.article_cache["test"][100]["extra"]["image_url"].endswith("key=new")

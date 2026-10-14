@@ -329,12 +329,21 @@ class TelegramBot(BaseBot[telegram.Message]):
         self.target = target
 
     async def _send(self, data: BaseArticle) -> telegram.Message | None:
-        kwargs = self._make_message(data)
         msg = None
 
         with logfire.span("telegram_send_message", article_title=data.get("title", ""), target=self.target):
             try:
-                msg = await self.bot.send_message(chat_id=self.target, **kwargs)
+                if image_url := data["extra"].get("image_url"):
+                    try:
+                        msg = await self.bot.send_photo(
+                            chat_id=self.target, photo=image_url, **self._make_message(data, photo=True)
+                        )
+                    except telegram.error.BadRequest:
+                        # A rejected/expired image must not suppress the deal notification.
+                        self.logger.info("Photo rejected; sending text instead (%s)", data["url"])
+                        msg = await self.bot.send_message(chat_id=self.target, **self._make_message(data))
+                else:
+                    msg = await self.bot.send_message(chat_id=self.target, **self._make_message(data))
                 self.logger.debug("Message send to %s %s", self.target, msg.message_id)
                 logfire.info(
                     "Message sent successfully",
@@ -381,8 +390,11 @@ class TelegramBot(BaseBot[telegram.Message]):
             self.logger.warning("Message not found: %s (%s)", data["title"], data["url"])
             return
         try:
-            kwargs = self._make_message(data)
-            await msg.edit_text(**kwargs)
+            if getattr(msg, "photo", None):
+                # The photo is already stored by Telegram; don't refetch an expiring URL.
+                await msg.edit_caption(**self._make_message(data, photo=True))
+            else:
+                await msg.edit_text(**self._make_message(data))
         except telegram.error.RetryAfter as e:
             retry_after = _retry_after_seconds(e.retry_after)
             self.logger.warning(
@@ -452,24 +464,28 @@ class TelegramBot(BaseBot[telegram.Message]):
         for job in data["queue"]:
             await self.queue.put(job)
 
-    def _make_message(self, d: BaseArticle) -> dict:
+    def _make_message(self, d: BaseArticle, *, photo: bool = False) -> dict:
         if d["category"]:
-            md = escape_markdown("[{category}] {title}".format(**d))
+            text = "[{category}] {title}".format(**d)
         else:
-            md = escape_markdown("{title}".format(**d))
+            text = "{title}".format(**d)
         if d["extra"].get("price") and d["extra"].get("delivery"):
             delivery_direct = d["extra"].get("direct_delivery")
             if delivery_direct is None:
-                md += escape_markdown("\n{price} / {delivery}".format(**d["extra"]))
+                text += "\n{price} / {delivery}".format(**d["extra"])
             elif delivery_direct:
-                md += escape_markdown("\n{price} / {delivery} (직배 가능)".format(**d["extra"]))
+                text += "\n{price} / {delivery} (직배 가능)".format(**d["extra"])
             else:
-                md += escape_markdown("\n{price} / {delivery} (직배 불가능)".format(**d["extra"]))
+                text += "\n{price} / {delivery} (직배 불가능)".format(**d["extra"])
+        if photo and len(text.encode("utf-16-le")) > 2048:
+            # Truncate before Markdown escaping, without splitting an emoji or escape sequence.
+            text = text.encode("utf-16-le")[:2046].decode("utf-16-le", errors="ignore") + "…"
+        md = escape_markdown(text)
         if d["is_end"]:
             md = f"~{md}~"
         btn = [[telegram.InlineKeyboardButton("자세히 보기 ({site_name} {board_name})".format(**d), d["url"])]]
         result = {
-            "text": md,
+            "caption" if photo else "text": md,
             "reply_markup": telegram.InlineKeyboardMarkup(btn),
             "parse_mode": telegram.constants.ParseMode.MARKDOWN_V2,
         }
