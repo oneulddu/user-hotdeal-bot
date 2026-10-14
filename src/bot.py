@@ -479,14 +479,14 @@ class TelegramBot(BaseBot[telegram.Message]):
                 text += "\n{price} / {delivery} (직배 불가능)".format(**d["extra"])
         stats = []
         extra = d["extra"]
-        # These fields opt in to the ArcaLive engagement footer; other crawlers keep their format.
+        # Crawlers opt in to the engagement footer by providing these fields.
         if "comment_count" in extra or "is_best" in extra:
             if extra.get("recommend") is not None:
                 stats.append(f"👍 {extra['recommend']}")
             if type(extra.get("comment_count")) is int and extra["comment_count"] >= 0:
                 stats.append(f"💬 {extra['comment_count']}")
             if extra.get("is_best") is True:
-                stats.append("🔥 초핫딜")
+                stats.append(f"🔥 {extra.get('best_label') or '초핫딜'}")
         footer = "\n\n" + " · ".join(stats) if stats else ""
         text_limit = 2048 - len(footer.encode("utf-16-le"))
         if photo and len(text.encode("utf-16-le")) > text_limit:

@@ -1,5 +1,6 @@
 # 핫딜 게시판 https://quasarzone.com/bbs/qb_saleinfo
 import re
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
@@ -92,6 +93,43 @@ class QuasarzoneCrawler(BaseCrawler):
     RESPONSE_BACKOFF_STATUS_CODES = QUASARZONE_BACKOFF_STATUS_CODES
     RESPONSE_BACKOFF_DELAYS_SECONDS = QUASARZONE_BACKOFF_DELAYS_SECONDS
 
+    @staticmethod
+    def _image_url(value: object) -> str | None:
+        if not isinstance(value, str) or not value or any(c.isspace() or ord(c) < 32 for c in value):
+            return None
+        url = "https:" + value if value.startswith("//") else value
+        try:
+            parts = urlsplit(url)
+            if (
+                parts.scheme != "https"
+                or parts.hostname not in {"img2.quasarzone.com", "img2.quasarzone.co.kr"}
+                or parts.username is not None
+                or parts.password is not None
+                or parts.port is not None
+                or not parts.path
+                or parts.fragment
+            ):
+                return None
+        except ValueError:
+            return None
+        # Telegram can fetch this public CDN alias. Keep the thumbnail path/query intact.
+        return url.replace(parts.netloc, "img2.quasarzone.co.kr", 1)
+
+    def notification_info(self, row: Tag) -> dict:
+        data = {"best_label": "인기"}
+        if image_url := self._image_url(row.get("data-preview")):
+            data["image_url"] = image_url
+        comment = row.select_one(".qc-count-comment, .ctn-count")
+        if comment is None:
+            comment = row.select_one(".board-list-comment")
+        if comment is not None:
+            text = comment.get_text(strip=True)
+            if re.fullmatch(r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)", text):
+                data["comment_count"] = int(text.replace(",", ""))
+        if "v2-list-row--hotdeal" in row.get("class", []):
+            data["is_best"] = row.select_one(".v2-badge--hot") is not None
+        return data
+
     async def parsing(self, html: str) -> dict[int, BaseArticle]:
         soup = BeautifulSoup(html, "html.parser")
         # 게시판 이름
@@ -165,6 +203,7 @@ class QuasarzoneCrawler(BaseCrawler):
                     "recommend": _recommend_tag.text.strip(),
                     "view": _view_tag.text.strip(),
                     **_info,  # price, delivery, direct_delivery
+                    **self.notification_info(row),
                 },
             }
         return data

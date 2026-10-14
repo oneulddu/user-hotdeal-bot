@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.crawler import ArticleCollection
+from src.crawler.quasarzone import QuasarzoneCrawler
 from src.db import ArticleRepository, get_async_engine, get_async_session, init_db
 from src.main import BotManager, PersistenceManager
 from tests.test_main import make_article
+from tests.test_quasarzone_parser import TITLE, make_page
 
 
 def article(article_id=1, *, comments=0, recommend="0", best=False):
@@ -128,3 +130,32 @@ async def test_other_crawler_recommendation_counts_keep_existing_behavior(manage
     result = await poll(manager, clock, 300, make_article(extra={"recommend": "8"}))
     assert not result["update"]
     assert not manager._engagement_state["dummy"]
+
+
+@pytest.mark.asyncio
+async def test_quasarzone_parser_uses_shared_cadence_and_immediate_popularity(manager_clock):
+    manager, clock = manager_clock
+    cwr = QuasarzoneCrawler("quasarzone", [])
+
+    async def crawl(seconds, *, comments=12, popular=False):
+        clock[0] = seconds
+        html = make_page("v2", TITLE).replace('class="ctn-count">12', f'class="ctn-count">{comments}')
+        if popular:
+            html = html.replace(
+                '<span class="v2-badge">', '<span class="v2-badge--hot">🔥인기</span><span class="v2-badge">'
+            )
+        rows = ArticleCollection(await cwr.parsing(html))
+        return await manager._crawling("quasarzone", SimpleNamespace(get=AsyncMock(return_value=rows)))
+
+    try:
+        assert not (await crawl(0))["new"]
+        assert not (await crawl(60, comments=13))["update"]
+        update = await crawl(120, comments=13, popular=True)
+        assert update["update"][0]["extra"]["is_best"] is True
+        assert not update["new"]
+        assert not (await crawl(180, comments=14, popular=True))["update"]
+        update = await crawl(420, comments=14, popular=True)
+        assert update["update"][0]["extra"]["comment_count"] == 14
+        assert not (await crawl(720, comments=14, popular=True))["update"]
+    finally:
+        await cwr.close()

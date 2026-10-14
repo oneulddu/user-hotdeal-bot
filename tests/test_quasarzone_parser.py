@@ -1,9 +1,12 @@
 from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from bs4 import BeautifulSoup
 
 from src.crawler.quasarzone import QuasarzoneCrawler
+from src.http_client import HttpResponse
 
 TITLE = "[쇼핑몰] 할인 상품 (9,900원/무료배송)"
 
@@ -79,7 +82,15 @@ async def test_quasarzone_parses_title_and_metadata(layout, nested, ended):
             "crawler_name": "quasarzone",
             "url": "https://quasarzone.com/bbs/qb_saleinfo/views/123",
             "is_end": ended,
-            "extra": {"recommend": "0", "view": "1.1천", "price": "￦9,900", "delivery": "무배"},
+            "extra": {
+                "recommend": "0",
+                "view": "1.1천",
+                "price": "￦9,900",
+                "delivery": "무배",
+                "comment_count": 12,
+                "best_label": "인기",
+                **({"is_best": False} if layout == "v2" else {}),
+            },
         }
     }
 
@@ -136,3 +147,84 @@ async def test_quasarzone_direct_delivery_requires_exact_status(status, expected
     finally:
         await instance.close()
     assert data[123]["extra"]["direct_delivery"] is expected
+
+
+@pytest.mark.parametrize(
+    "source", ["https://img2.quasarzone.com", "//img2.quasarzone.com", "https://img2.quasarzone.co.kr"]
+)
+def test_image_alias_preserves_thumbnail_path_and_query(source):
+    path = "/qb_saleinfo/2026/10/14/qt_example.webp?key=a%2fb%2B+c&size=small"
+    assert QuasarzoneCrawler._image_url(source + path) == "https://img2.quasarzone.co.kr" + path
+    assert QuasarzoneCrawler._image_url(source + "/a.webp?") == "https://img2.quasarzone.co.kr/a.webp?"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        None,
+        "",
+        [],
+        "http://img2.quasarzone.com/a.jpg",
+        "https://other.example/a.jpg",
+        "https://img2.quasarzone.com.evil.example/a.jpg",
+        "https://user@img2.quasarzone.com/a.jpg",
+        "https://img2.quasarzone.com:bad/a.jpg",
+        "https://[invalid/a.jpg",
+        "//img2.quasarzone.com/a\nb.jpg",
+    ],
+)
+def test_invalid_optional_image_url_is_ignored(source):
+    assert QuasarzoneCrawler._image_url(source) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count, expected", [("0", 0), ("1,234", 1234), ("-1", None), ("?", None), ("", None)])
+async def test_comments_keep_hidden_zero_and_ignore_invalid_values(count, expected):
+    soup = BeautifulSoup(make_page("v2", TITLE), "html.parser")
+    comment = soup.select_one(".ctn-count")
+    comment.string = count
+    comment.parent["style"] = "display:none"
+    instance = QuasarzoneCrawler("quasarzone", [])
+    try:
+        data = await instance.parsing(str(soup))
+    finally:
+        await instance.close()
+    assert 123 in data
+    assert data[123]["extra"].get("comment_count") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("popular", [False, True])
+async def test_photo_and_popularity_are_read_from_list_without_additional_requests(popular):
+    soup = BeautifulSoup(make_page("v2", TITLE), "html.parser")
+    row = soup.select_one(".v2-list-row:not(.v2-partner-row)")
+    row["data-preview"] = "https://img2.quasarzone.com/editor/2026/10/14/qt_image.webp?"
+    row.select_one(".qc-count-good").string = "100"
+    if popular:
+        badge = soup.new_tag("span", attrs={"class": "v2-badge--hot"})
+        badge.string = "🔥인기"
+        row.select_one(".v2-list-row__line1").append(badge)
+    url = "https://quasarzone.com/bbs/qb_saleinfo"
+    client = SimpleNamespace(get=AsyncMock(return_value=HttpResponse(200, str(soup).encode(), {}, url)))
+    instance = QuasarzoneCrawler("quasarzone", [url], client=client)
+    try:
+        data = await instance.get()
+    finally:
+        await instance.close()
+    assert data[123]["extra"]["image_url"] == "https://img2.quasarzone.co.kr/editor/2026/10/14/qt_image.webp?"
+    assert data[123]["extra"]["comment_count"] == 12
+    assert data[123]["extra"]["recommend"] == "100"
+    assert data[123]["extra"]["is_best"] is popular  # Never infer popularity from recommendation count.
+    assert data[123]["category"] == "생활/식품"
+    client.get.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_image_does_not_use_shop_logo_or_drop_the_deal():
+    instance = QuasarzoneCrawler("quasarzone", [])
+    try:
+        data = await instance.parsing(make_page("v2", TITLE))
+    finally:
+        await instance.close()
+    assert "image_url" not in data[123]["extra"]
+    assert data[123]["extra"]["comment_count"] == 12

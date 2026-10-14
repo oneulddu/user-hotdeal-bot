@@ -340,3 +340,13 @@ def test_closed_long_photo_keeps_engagement_footer_outside_strikethrough():
     assert footer == "👍 8 · 💬 17 · 🔥 초핫딜"
     plain = re.sub(r"\\(.)", r"\1", body[1:-1]) + "\n\n" + footer
     assert len(plain.encode("utf-16-le")) <= 2048
+
+
+@pytest.mark.parametrize("photo", [False, True])
+def test_quasarzone_popular_label_does_not_change_arcalive_default(photo):
+    article = make_article()
+    article["extra"] = {"recommend": "13", "comment_count": 33, "is_best": True, "best_label": "인기"}
+    key = "caption" if photo else "text"
+    assert TelegramBot._make_message(None, article, photo=photo)[key].endswith("👍 13 · 💬 33 · 🔥 인기")
+    article["extra"].pop("best_label")
+    assert TelegramBot._make_message(None, article, photo=photo)[key].endswith("👍 13 · 💬 33 · 🔥 초핫딜")
